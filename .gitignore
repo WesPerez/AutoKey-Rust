@@ -1,0 +1,19 @@
+# Build output
+/target/
+
+# Runtime/local state
+/configs/
+/logs/
+/app-state.json
+
+# Distribution staging folders; keep release archives
+/dist/*/
+!/dist/*.zip
+
+# IDE
+.vscode/
+.idea/
+
+# System files
+.DS_Store
+Thumbs.db

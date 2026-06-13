@@ -1,0 +1,1340 @@
+E:\Project\Common\AutoKey上一个项目 
+E:\Project\Common\AutoKey-Rust\autokeyrust.txt   上一版本的文本    我觉得很多问题   你加上自己的多思考  关注我文档里最开始的核心需求   我就是要防检测加上一版已经有了的按键功能  你仔细对比  回归我的本质问题
+
+
+
+设为目标
+20:32
+
+
+
+
+
+
+
+
+已处理 59m 47s
+
+
+
+
+明白，你指出得对：上一轮我把“降低风险”误当成了“回归核心需求”，删掉了不少上一版行为，却没有先把旧项目和 autokeyrust.txt 的原始需求逐条对齐。这次我会先建立功能对照表，恢复上一版已有的按键能力；“防检测”部分我会区分正常的稳定性与输入特征优化，不能协助绕过反作弊或安全检测。
+
+
+
+
+已运行 4 条命令已运行 Get-ChildItem -Force; rg --files
+
+
+
+
+
+
+
+已运行 Get-Content -Raw -Encoding UTF8 autokeyrust.txt
+
+
+
+
+
+
+
+已运行 Get-ChildItem -Force; rg --files src; Get-Content -Raw -Encoding UTF8 Cargo.toml
+
+
+
+
+
+
+
+已运行 Get-ChildItem -Path E:\Project\Common\AutoKey -Recurse -File | Select-Object FullName,Length,LastWriteTime | Sort-Object FullName
+
+
+
+
+
+
+
+
+
+
+
+
+需求文本本身有一个关键误导：它多次声称“功能已完整”，但同一段又承认窗口绑定未集成、GUI 为 0%、托盘和热键只是文件存在。这不是完成证据。现在我以旧 C# 源码为唯一功能基线，重点读取配置模型、热键捕获、运行循环、窗口绑定与托盘行为。
+
+
+
+
+已运行 20 条命令{count, plural, one {已搜索网页 # 次} other {已搜索网页 # 次}}已运行 Get-Content -Raw -Encoding UTF8 Models\KeyConfig.cs; Get-Content -Raw -Encoding UTF8 Models\HotkeyGesture.cs; Get-Content -Raw -Encoding UTF8 Controls\KeyCaptureBox.cs; Get-Content -Raw -Encoding UTF8 Controls\HotkeyCaptureBox.cs
+
+
+
+
+
+
+
+已运行 Get-Content -Raw -Encoding UTF8 Humanizer.cs; Get-Content -Raw -Encoding UTF8 NativeInterop.cs
+
+
+
+
+
+
+
+已运行 Get-Content -Raw -Encoding UTF8 MainWindowViewModel.cs
+
+
+
+
+
+
+
+已运行 Get-Content -Raw -Encoding UTF8 MainWindow.xaml; Get-Content -Raw -Encoding UTF8 App.xaml.cs; Get-Content -Raw -Encoding UTF8 App.xaml
+
+
+
+
+
+
+
+已运行 Get-Content -Raw -Encoding UTF8 MainWindow.xaml.cs
+
+
+
+
+
+
+
+已运行 Get-Content -Raw -Encoding UTF8 src\hook.rs; Get-Content -Raw -Encoding UTF8 src\input.rs; Get-Content -Raw -Encoding UTF8 src\window.rs; Get-Content -Raw -Encoding UTF8 src\single_instance.rs
+
+
+
+
+
+
+
+已运行 rg -n "StartAll|StopAll|RunKeyLoopAsync|RunSequentialLoopAsync|CalcDelay|BindWindow|SaveConfig|LoadConfig|DeleteConfig|LoadNextConfig|RegisterHotKey|SetupTrayIcon|MouseHookCallback|KeyboardHookCallback|Window_Closing|Window_StateChanged|KeyCapture" -g "*.cs" -g "*.xaml"
+
+
+
+
+
+
+
+已运行 Get-Content -Raw -Encoding UTF8 src\config.rs; Get-Content -Raw -Encoding UTF8 src\engine.rs
+
+
+
+
+
+
+
+已运行 Get-Content -Raw -Encoding UTF8 src\gui.rs; Get-Content -Raw -Encoding UTF8 src\main.rs
+
+
+
+
+
+
+
+docs.rs tray-icon latest Rust TrayIconBuilder MenuEvent Windows
+
+
+
+
+
+
+
+已运行 rg -n "pub enum Key|pub enum Event" C:\Users\Wes\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\egui-0.29.1 -g "*.rs"
+
+
+
+
+
+
+
+已运行 rg -n "pub enum ViewportCommand|Visible\(|Minimized\(|CancelClose|Close" C:\Users\Wes\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\egui-0.29.1 -g "*.rs"
+
+
+
+
+
+
+
+已运行 cargo search tray-icon --limit 3，已持续 1s
+
+
+
+
+
+
+
+已运行 cargo info tray-icon@0.24.1，已持续 3s
+
+
+
+
+
+
+
+已运行 Get-Content -Encoding UTF8 C:\Users\Wes\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\egui-0.29.1\src\data\key.rs | Select-Object -First 180; Get-Content -Encoding UTF8 C:\Users\Wes\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\egui-0.29.1\src\data\input.rs | Select-Object -Skip 375 -First 100
+
+
+
+
+
+
+
+已运行 rg -n "TrayIconBuilder|MenuEvent::receiver|TrayIconEvent::receiver" C:\Users\Wes\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tray-icon-0.24.1 -g "*.rs" -g "*.md"
+
+
+
+
+
+
+
+已运行 rg -n "pub struct TrayIcon|fn set_|with_tooltip|with_menu|pub struct Icon" C:\Users\Wes\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tray-icon-0.24.1\src -g "*.rs"
+
+
+
+
+
+
+
+已运行 Get-Content -Raw -Encoding UTF8 C:\Users\Wes\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tray-icon-0.24.1\README.md
+
+
+
+
+
+
+
+已运行 Get-Content -Encoding UTF8 C:\Users\Wes\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\egui-0.29.1\src\viewport.rs | Select-Object -Skip 360 -First 150
+
+
+
+
+
+
+
+已运行 Get-Content -Encoding UTF8 C:\Users\Wes\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tray-icon-0.24.1\src\lib.rs | Select-Object -Skip 330 -First 115; Get-Content -Encoding UTF8 C:\Users\Wes\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tray-icon-0.24.1\src\icon.rs | Select-Object -Skip 115 -First 90
+
+
+
+
+
+
+
+已运行 rg -n "pub struct MenuItem|pub struct CheckMenuItem|pub struct MenuId|pub fn id\(|set_checked|append_items" C:\Users\Wes\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\muda-*\src -g "*.rs"
+
+
+
+
+
+
+
+
+
+
+
+
+对比结论已经很明确：当前 Rust 版只保住了“12 行配置、前后台发送、左 Alt、单配置、窗口列表”这几个骨架，旧版的按键捕获、多配置、配置快捷键、右键拖拽、Ctrl+Alt+Space、逐键运行状态、托盘、最小化后台、第二实例唤醒、错误日志和自动保存都缺失。更严重的是当前“全局随机”实现成单向额外加时，和旧版“与单键范围相加后做 ± 随机”的语义不一致；运行中编辑还会重置整个调度。
+
+
+
+
+我现在开始按旧版行为重构，而不是继续往当前骨架上打补丁：配置层改为“多命名配置 + 应用状态”，输入层改成可中断且保证 KeyUp，钩子层合并键盘快捷键与右键拖拽，GUI 恢复按键/快捷键捕获和逐键状态，托盘负责后台驻留。所有修改仍只使用标准 Windows 输入接口，不会加入绕过反作弊、隐藏进程、直接 syscall 或伪装输入来源。
+
+
+
+
+已创建 6 个文件已编辑 3 个文件已运行 3 条命令已运行 cargo search winreg --limit 3; cargo info winreg，已持续 6s
+
+
+
+
+
+
+
+已运行 Get-Content -Encoding UTF8 C:\Users\Wes\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\egui-0.29.1\src\viewport.rs | Select-Object -Skip 640 -First 110
+
+
+
+
+
+
+
+已运行 rg -n "pub struct ViewportInfo|pub minimized|pub inner_rect|pub focused|close_requested" C:\Users\Wes\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\egui-0.29.1\src -g "*.rs"
+
+
+
+
+
+
+
+已编辑Cargo.toml+2-0
+
+
+
+
+
+
+已创建config.rs+436-0
+
+
+
+
+
+
+已创建hotkey.rs+155-0
+
+
+
+
+
+
+
+
+
+已创建engine.rs+420-0
+
+
+
+
+
+
+已编辑humanizer.rs+3-3
+
+
+
+
+
+
+已创建input.rs+130-0
+
+
+
+
+
+
+
+
+
+已创建hook.rs+310-0
+
+
+
+
+
+
+
+
+
+已创建single_instance.rs+79-0
+
+
+
+
+
+
+已编辑window.rs+21-0
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+新的后端现在已经恢复了旧版最关键的语义：运行时使用启动快照，不会因编辑界面而重置；独立模式按每个键计数，顺序模式按整轮计数；全局随机与单键随机合并后做双向浮动；停止发生在按下期间也会先补发 KeyUp。钩子层也已恢复左 Alt、Ctrl+Alt+Space、右键拖拽和配置快捷键分发。
+
+
+
+
+已创建 3 个文件已编辑 2 个文件已运行 8 条命令已运行 cargo fmt --all; cargo check --all-targets，已持续 19s
+
+
+
+
+
+
+
+已运行 rg -n "pub struct MenuItem|pub struct CheckMenuItem|pub struct MenuId|pub fn id\(|set_checked|append_items|pub struct MenuEvent" C:\Users\Wes\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\muda-0.19.2\src -g "*.rs"
+
+
+
+
+
+
+
+已运行 Get-Content -Raw -Encoding UTF8 C:\Users\Wes\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\muda-0.19.2\examples\window_event.rs -ErrorAction SilentlyContinue
+
+
+
+
+
+
+
+已运行 rg -n "enum TrayIconEvent|DoubleClick|Click" C:\Users\Wes\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tray-icon-0.24.1\src\lib.rs
+
+
+
+
+
+
+
+已运行 Get-Content -Encoding UTF8 C:\Users\Wes\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\muda-0.19.2\src\items\normal.rs | Select-Object -First 95; Get-Content -Encoding UTF8 C:\Users\Wes\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\muda-0.19.2\src\items\check.rs | Select-Object -First 155
+
+
+
+
+
+
+
+已运行 Get-Content -Encoding UTF8 C:\Users\Wes\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tray-icon-0.24.1\src\lib.rs | Select-Object -Skip 550 -First 55; Get-Content -Encoding UTF8 C:\Users\Wes\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\muda-0.19.2\src\lib.rs | Select-Object -Skip 475 -First 40
+
+
+
+
+
+
+
+已运行 Get-Content -Encoding UTF8 C:\Users\Wes\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\muda-0.19.2\src\items\predefined.rs | Select-Object -First 110
+
+
+
+
+
+
+
+已创建logging.rs+21-0
+
+
+
+
+
+
+已创建tray.rs+145-0
+
+
+
+
+
+
+
+
+
+已运行 rg -n "trait App|fn on_exit" C:\Users\Wes\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\eframe-0.29.1\src -g "*.rs"
+
+
+
+
+
+
+
+已编辑hook.rs+46-3
+
+
+
+
+
+
+已编辑hotkey.rs+17-1
+
+
+
+
+
+
+
+
+
+已创建main.rs+147-0
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+上下文已自动压缩
+
+
+
+我继续沿着“旧版功能逐项对齐”的主线做。现在先收口几个已知编译点，再重写 GUI，把配置档、按键捕获、热键、窗口绑定、托盘与单实例唤醒真正接回主流程。
+
+
+
+
+已运行 6 条命令已运行 Get-Content -Raw src\tray.rs
+
+
+
+
+
+
+
+已运行 Get-Content -Raw src\config.rs
+
+
+
+
+
+
+
+已运行 Get-Content -Raw src\single_instance.rs
+
+
+
+
+
+
+
+已运行 Get-Content -Raw src\gui.rs
+
+
+
+
+
+
+
+已运行 Get-Content -Raw src\engine.rs
+
+
+
+
+
+
+
+已运行 Get-Content -Raw src\main.rs
+
+
+
+
+
+
+
+
+
+
+
+
+旧 GUI 文件已经确认是上一版残留：它仍引用被删除的单配置接口，且没有接入新状态。先修两个调度器所有权问题和一个无效导入，然后我会整文件替换 GUI，避免在残缺结构上继续打补丁。
+
+
+
+
+已编辑 2 个文件已运行 8 条命令已运行 1 条命令已编辑engine.rs+11-10
+
+
+
+
+
+
+已编辑single_instance.rs+1-1
+
+
+
+
+
+
+
+
+
+已运行 Get-Content -Raw src\hotkey.rs
+
+
+
+
+
+
+
+已运行 Get-Content -Raw src\hook.rs
+
+
+
+
+
+
+
+已运行 Get-Content -Raw src\window.rs
+
+
+
+
+
+
+
+已运行 rg "pub enum ViewportCommand|struct ViewportInfo|close_requested" "$env:USERPROFILE\.cargo\registry\src" -g "viewport.rs" -g "input.rs" -g "*.rs" | Select-Object -First 40，已持续 1s
+
+
+
+
+
+
+
+已运行 Get-Content -Raw Cargo.toml
+
+
+
+
+
+
+
+Inspect source encoding
+
+
+
+
+
+已运行 Select-String -Path "$env:USERPROFILE\.cargo\registry\src\index.crates.io-*\egui-0.29.1\src\data\input.rs" -Pattern "pub struct ViewportInfo" -Context 0,80
+
+
+
+
+
+
+
+已运行 Select-String -Path "$env:USERPROFILE\.cargo\registry\src\index.crates.io-*\egui-0.29.1\src\widgets\combo_box.rs" -Pattern "from_id_salt|selected_text" -Context 0,5 | Select-Object -First 20
+
+
+
+
+
+
+
+已运行 Select-String -Path "$env:USERPROFILE\.cargo\registry\src\index.crates.io-*\egui-0.29.1\src\viewport.rs" -Pattern "pub enum ViewportCommand" -Context 0,100
+
+
+
+
+
+
+
+
+
+
+
+
+GUI 这次会一次性接齐关键工作流：12 个按键捕获与运行指示、多配置保存/切换/删除、配置热键与循环热键、循环模式、前台/后台窗口绑定、托盘、最小化隐藏、第二实例唤醒和自动保存。调度运行时仍读取启动快照，编辑界面不会再把正在执行的任务重置。
+
+
+
+
+已创建 1 个文件已创建gui.rs+1,025-0
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+GUI 主干已替换完成。接下来进入编译驱动的收口阶段：先让 Rust 编译器把 API、借用关系和 Windows 类型问题全部摊出来，再逐项修正；之后才做测试和实际启动验证。
+
+
+
+
+已运行 2 条命令已运行 1 条命令已运行 cargo fmt -- --check
+
+
+
+
+
+
+
+已运行 cargo check --all-targets，已持续 1s
+
+
+
+
+
+
+
+Inspect hotkey test
+
+
+
+
+
+
+
+
+
+
+首轮 cargo check --all-targets 已经通过，说明新 GUI 与主流程接口已经接通。现在处理一处捕获细节：被捕获按键的 KeyDown/KeyUp 必须成对拦截，不能只吞下按下事件却把释放事件漏给当前程序；同时修正热键显示测试。
+
+
+
+
+已编辑 2 个文件已运行 4 条命令已编辑hook.rs+7-1
+
+
+
+
+
+
+已编辑hotkey.rs+1-1
+
+
+
+
+
+
+
+
+
+已运行 cargo fmt
+
+
+
+
+
+
+
+已运行 cargo test --all-targets，已持续 18s
+
+
+
+
+
+
+
+已运行 cargo check --release，已持续 25s
+
+
+
+
+
+
+
+已运行 cargo clippy --all-targets -- -D warnings，已持续 19s
+
+
+
+
+
+
+
+
+
+
+
+
+测试 10/10 通过，Release 检查也通过。严格 Clippy 只报了 4 个代码质量项，没有功能错误；我现在把这些告警清零，然后补充更有价值的配置迁移、热键和调度边界测试。
+
+
+
+
+已编辑 1 个文件已运行 3 条命令已编辑hook.rs+14-14
+
+
+
+
+
+
+
+
+
+已运行 cargo clippy --all-targets -- -D warnings，已持续 2s
+
+
+
+
+
+
+
+已运行 cargo fmt -- --check
+
+
+
+
+
+
+
+已运行 rg -n "TODO|FIXME|unwrap\(|expect\(|panic!|unsafe|anti|detect|bypass|syscall|dwExtraInfo|PostMessage|SendInput" src Cargo.toml README.md autokeyrust.txt
+
+
+
+
+
+
+
+
+
+
+
+
+代码检查已经全绿；静态扫描发现 README 仍保留上一版的错误承诺，例如“随机 dwExtraInfo”“syscall 绕过”，与当前实现和我明确划定的安全边界都不一致。这类文档会继续误导后续维护，我会把 README 改成真实功能说明，同时启动一次独立代码审查，专门找运行时竞态、托盘生命周期和旧配置兼容问题。
+
+
+
+
+已运行 16 条命令已运行 Get-Content -Raw README.md
+
+
+
+
+
+
+
+已运行 rg --files src | Sort-Object
+
+
+
+
+
+
+
+已运行 cargo fmt
+
+
+
+
+
+
+
+已运行 Get-Content -Raw src\humanizer.rs; Get-Content -Raw src\input.rs; Get-Content -Raw src\logging.rs
+
+
+
+
+
+
+
+已运行 rg -n "enum LoopMode|LoopMode|JsonStringEnum|ConfigHotkey|CycleConfigHotkey|SelectedConfig" E:\Project\Common\AutoKey -g "*.cs" -g "*.json"
+
+
+
+
+
+
+
+已运行 Get-Content -Raw E:\Project\Common\AutoKey-Rust\src\config.rs | Select-String -Pattern "LegacyConfig" -Context 0,80
+
+
+
+
+
+
+
+已运行 rg -n "class Config|record Config|RandomDelay|GlobalRandomDelay|IndependentLoop|AntiPattern" E:\Project\Common\AutoKey -g "*.cs"
+
+
+
+
+
+
+
+已运行 Get-Content E:\Project\Common\AutoKey\MainWindowViewModel.cs | Select-Object -Skip 560 -First 240
+
+
+
+
+
+
+
+已运行 Get-Content E:\Project\Common\AutoKey\MainWindowViewModel.cs | Select-Object -First 80
+
+
+
+
+
+
+
+已运行 rg -n "ConfigDirectory|AppState|StateFile|config-state|app-state|AutoKey" E:\Project\Common\AutoKey\MainWindowViewModel.cs E:\Project\Common\AutoKey\App.xaml.cs
+
+
+
+
+
+
+
+已运行 Get-ChildItem -Force | Select-Object Name,Length,LastWriteTime
+
+
+
+
+
+
+
+已运行 Get-Content -Raw config.example.json
+
+
+
+
+
+
+
+已运行 rg -n "反检测|绕过|syscall|dwExtraInfo|完成度|100%|已完成|TODO|随机化|混淆|保护" *.md *.json *.bat *.ps1
+
+
+
+
+
+
+
+已运行 Get-Content -Raw build.bat
+
+
+
+
+
+
+
+已运行 Get-Content -Raw QUICKSTART.md
+
+
+
+
+
+
+
+已运行 rg -n "PostMessage|SendInput|WM_SYSKEY|KEYEVENTF|MapVirtualKey|dwExtraInfo" E:\Project\Common\AutoKey -g "*.cs"
+
+
+
+
+
+
+
+
+
+
+
+
+对照旧 C# 源码后又找到几处“能编译但还不够稳”的问题：旧版应用状态尚未迁移、单实例唤醒存在极小竞态、左右修饰键同时按下会丢状态、手工输入的无效/重复热键没有提示、Release 版仍可能带控制台窗口。现在把这些一起修掉。
+
+
+
+
+已编辑 7 个文件已运行 4 条命令已编辑config.rs+123-6
+
+
+
+
+
+
+已编辑gui.rs+32-2
+
+
+
+
+
+
+已编辑hook.rs+14-7
+
+
+
+
+
+
+已编辑hotkey.rs+40-0
+
+
+
+
+
+
+已编辑main.rs+26-1
+
+
+
+
+
+
+已编辑single_instance.rs+14-13
+
+
+
+
+
+
+已编辑tray.rs+3-3
+
+
+
+
+
+
+
+
+
+已运行 cargo fmt -- --check
+
+
+
+
+
+
+
+已运行 cargo check --all-targets，已持续 2s
+
+
+
+
+
+
+
+已运行 cargo test --all-targets，已持续 3s
+
+
+
+
+
+
+
+已运行 cargo clippy --all-targets -- -D warnings，已持续 4s
+
+
+
+
+
+
+
+
+
+
+
+
+这一轮只暴露了一个普通的泛型推断问题，功能设计本身没有新冲突。我补上明确类型并格式化，随后继续跑全套检查。
+
+
+
+
+已编辑 1 个文件已运行 5 条命令已编辑config.rs+2-1
+
+
+
+
+
+
+
+
+
+已运行 cargo fmt
+
+
+
+
+
+
+
+已运行 cargo check --all-targets，已持续 1s
+
+
+
+
+
+
+
+已运行 cargo test --all-targets，已持续 4s
+
+
+
+
+
+
+
+已运行 cargo check --release，已持续 2s
+
+
+
+
+
+
+
+已运行 cargo clippy --all-targets -- -D warnings，已持续 5s
+
+
+
+
+
+
+
+
+
+
+
+
+源码检查已经再次全绿：12 个测试、所有目标编译、Release 编译和零告警 Clippy 都通过。现在清理上一版留下的误导文档与错误配置示例，确保项目不会再声称“绕过检测”或引用已经不存在的单配置路径。
+
+
+
+
+已创建 9 个文件已运行 1 条命令已创建ADVANCED_PROTECTION.md+12-0
+
+
+
+
+
+
+已创建COMPLETION_REPORT.md+5-0
+
+
+
+
+
+
+已创建GUI_COMPLETION.md+5-0
+
+
+
+
+
+
+已创建GUI_GUIDE.md+33-0
+
+
+
+
+
+
+已创建IMPLEMENTATION_STATUS.md+12-0
+
+
+
+
+
+
+已创建QUICKSTART.md+11-0
+
+
+
+
+
+
+已创建README.md+83-0
+
+
+
+
+
+
+已创建build.bat+19-0
+
+
+
+
+
+
+已创建config.example.json+16-0
+
+
+
+
+
+
+
+
+
+已运行 rg -n "反检测|绕过|syscall|随机化dwExtraInfo|dwExtraInfo.*随机|100%|全部完成|anti_pattern_level|AutoKey-Rust\\config\.json|Ctrl\+C" -g "!autokeyrust.txt" -g "!target/**" -g "!*.log" .
+
+
+
+
+
+
+
+
+
+
+
+
+文档与示例也已校正，不再保留虚假的“已完成/绕过检测”描述。最后一段是原生运行验证：构建真正的 Release 可执行文件，启动 GUI，检查窗口、单实例唤醒和正常退出；这一步会用临时环境变量关闭托盘，避免测试进程隐藏后留在后台。
+
+
+
+
+已运行 4 条命令已运行 cargo build --release，已持续 1m 15s
+
+
+
+
+
+
+
+已运行 Get-Process autokey -ErrorAction SilentlyContinue | Select-Object Id,ProcessName,MainWindowTitle,StartTime
+
+
+
+
+
+
+
+已运行 Get-Content -Raw config.example.json | ConvertFrom-Json | Select-Object independent_loop,global_random_delay,max_loops,timing_variation_level,config_hotkey,@{n='key_count';e={$_.keys.Count}} | Format-List
+
+
+
+
+
+
+
+已运行 $exe = (Resolve-Path 'target\release\autokey.exe').Path
+$env:AUTOKEY_DISABLE_TRAY = '1'
+$first = Start-Process -FilePath $exe -PassThru -WindowStyle Hidden
+Start-Sleep -Seconds 4
+$first.Refresh()
+$firstState = [pscustomobject]@{ Id = $first.Id; Exited = $first.HasExited; WindowHandle = $first.MainWindowHandle; Title = $first.MainWindowTitle }
+$second = Start-Process -FilePath $exe -PassThru -WindowStyle Hidden
+$secondExited = $second.WaitForExit(5000)
+Start-Sleep -Milliseconds 500
+$first.Refresh()
+$afterSecond = [pscustomobject]@{ Id = $first.Id; Exited = $first.HasExited; WindowHandle = $first.MainWindowHandle; Title = $first.MainWindowTitle; SecondExited = $secondExited; SecondExitCode = $(if ($secondExited) { $second.ExitCode } else { $null }) }
+$closed = $first.CloseMainWindow()
+$firstExited = $first.WaitForExit(5000)
+if (-not $firstExited -and -not $first.HasExited) { Stop-Process -Id $first.Id -Force }
+Remove-Item Env:AUTOKEY_DISABLE_TRAY -ErrorAction SilentlyContinue
+$firstState | Format-List
+$afterSecond | Format-List
+[pscustomobject]@{ CloseRequested = $closed; FirstExitedNormally = $firstExited } | Format-List，已持续 5s
+
+
+
+
+
+
+
+
+
+
+
+
+原生烟雾测试通过：主窗口成功创建并显示 AutoKey - 默认，第二次启动在 5 秒内正常退出且没有创建第二个主进程，首次实例收到唤醒信号后仍存活，关闭请求也能正常结束。再做一次窗口截图检查，确认中文字体、表格与侧栏没有明显裁切或重叠。
+
+
+
+
+已运行 $exe = (Resolve-Path 'target\release\autokey.exe').Path
+$out = Join-Path $env:TEMP 'autokey-runtime.png'
+$env:AUTOKEY_DISABLE_TRAY = '1'
+$p = Start-Process -FilePath $exe -PassThru -WindowStyle Normal
+Start-Sleep -Seconds 3
+$p.Refresh()
+Add-Type -AssemblyName System.Drawing
+Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+public static class AutoKeyCapture {
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
+  [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr hWnd, IntPtr hdc, uint flags);
+  public struct RECT { public int Left, Top, Right, Bottom; }
+}
+'@
+$rect = New-Object AutoKeyCapture+RECT
+[void][AutoKeyCapture]::GetWindowRect($p.MainWindowHandle, [ref]$rect)
+$width = $rect.Right - $rect.Left
+$height = $rect.Bottom - $rect.Top
+$bitmap = New-Object System.Drawing.Bitmap $width, $height
+$graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+$hdc = $graphics.GetHdc()
+[void][AutoKeyCapture]::PrintWindow($p.MainWindowHandle, $hdc, 2)
+$graphics.ReleaseHdc($hdc)
+$graphics.Dispose()
+$bitmap.Save($out, [System.Drawing.Imaging.ImageFormat]::Png)
+$bitmap.Dispose()
+[void]$p.CloseMainWindow()
+[void]$p.WaitForExit(5000)
+if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force }
+Remove-Item Env:AUTOKEY_DISABLE_TRAY -ErrorAction SilentlyContinue
+Get-Item $out | Select-Object FullName,Length，已持续 4s
+
+
+
+
+
+
+
+
+
+
+
+
+已运行 7 条命令已运行 1 条命令已运行 Select-String -Path "$env:USERPROFILE\.cargo\registry\src\index.crates.io-*\eframe-0.29.1\src\epi.rs" -Pattern "follow_system_theme|default_theme" -Context 3,3
+
+
+
+
+
+
+
+已运行 rg -n "follow_system_theme|default_theme" "$env:USERPROFILE\.cargo\registry\src\index.crates.io-*\eframe-0.29.1"
+
+
+
+
+
+
+
+已运行 $path = (Get-ChildItem "$env:USERPROFILE\.cargo\registry\src\index.crates.io-*\eframe-0.29.1" | Select-Object -First 1).FullName; rg -n "follow_system_theme|default_theme|pub struct NativeOptions" $path
+
+
+
+
+
+
+
+已运行 $file = (Get-ChildItem "$env:USERPROFILE\.cargo\registry\src\index.crates.io-*\eframe-0.29.1\src\epi.rs" | Select-Object -First 1).FullName; Get-Content $file | Select-Object -Skip 250 -First 160
+
+
+
+
+
+
+
+Inspect GUI screenshot pixels
+
+
+
+
+
+已运行 $root = (Get-ChildItem "$env:USERPROFILE\.cargo\registry\src\index.crates.io-*\egui-winit-0.29.1" | Select-Object -First 1).FullName; rg -n "set_visuals|Visuals::light|Visuals::dark|SystemTheme" $root
+
+
+
+
+
+
+
+已运行 $root = (Get-ChildItem "$env:USERPROFILE\.cargo\registry\src\index.crates.io-*\eframe-0.29.1" | Select-Object -First 1).FullName; rg -n "set_visuals|Visuals::light|Visuals::dark|system_theme" $root
+
+
+
+
+
+
+
+已运行 $root = (Get-ChildItem "$env:USERPROFILE\.cargo\registry\src\index.crates.io-*\egui-0.29.1" | Select-Object -First 1).FullName; rg -n "system_theme|set_visuals_of|ThemePreference" $root\src | Select-Object -First 80
+
+
+
+
+
+
+
+
+
+
+
+
+截图检查抓到两个真正的界面问题：系统浅色主题覆盖了自定义深色视觉，右侧启动按钮也因标题行没有占满剩余宽度而被挤出。这里正是运行截图比“能编译”更有价值的地方，我现在修正并重新截图确认。
