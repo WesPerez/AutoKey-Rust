@@ -6,6 +6,65 @@ use std::sync::atomic::{AtomicU8, Ordering};
 const MINIMUM_DELAY: u32 = 20;
 const FATIGUE_THRESHOLD: u32 = 12;
 
+// ── Markov chain for delay correlation ──────────────────────────────
+// Discretizes delay values into NUM_STATES buckets and uses a first-order
+// Markov chain to create correlation between consecutive delays.
+// This makes the delay sequence look more human-like: real typists tend
+// to have correlated delays (slow periods → slow, fast periods → fast)
+// rather than fully independent random values.
+
+const NUM_STATES: usize = 8;
+
+#[derive(Default)]
+struct MarkovChain {
+    current: usize,
+    transitions: [[f64; NUM_STATES]; NUM_STATES],
+}
+
+impl MarkovChain {
+    fn new() -> Self {
+        let mut transitions = [[0.0; NUM_STATES]; NUM_STATES];
+        for i in 0..NUM_STATES {
+            for j in 0..NUM_STATES {
+                let dist = (i as f64 - j as f64).abs();
+                // Exponential decay: staying near current state is more probable
+                // with occasional jumps to distant states
+                transitions[i][j] = (-dist * 0.6).exp();
+            }
+            // Normalize row to sum to 1.0
+            let sum: f64 = transitions[i].iter().sum();
+            for j in 0..NUM_STATES {
+                transitions[i][j] /= sum;
+            }
+        }
+        Self {
+            current: NUM_STATES / 2,
+            transitions,
+        }
+    }
+
+    fn next(&mut self) -> usize {
+        let r = fastrand::f64();
+        let mut cum = 0.0;
+        for j in 0..NUM_STATES {
+            cum += self.transitions[self.current][j];
+            if r < cum {
+                self.current = j;
+                return j;
+            }
+        }
+        self.current = NUM_STATES - 1;
+        self.current
+    }
+
+    /// Returns a bias factor in [-0.15, 0.15] based on the Markov state.
+    /// This creates correlation between consecutive delays.
+    fn bias(&mut self) -> f64 {
+        let state = self.next();
+        (state as f64 / (NUM_STATES - 1) as f64 - 0.5) * 0.3
+    }
+}
+
 #[derive(Default)]
 struct DelayState {
     last_delay: u32,
@@ -28,6 +87,7 @@ struct TimingState {
     delay_states: HashMap<usize, DelayState>,
     spare_gaussian: Option<f64>,
     last_press_duration: u32,
+    markov: MarkovChain,
 }
 
 static STATE: Lazy<Mutex<TimingState>> = Lazy::new(|| Mutex::new(TimingState::default()));
@@ -69,6 +129,13 @@ pub fn next_delay(base_delay: u32, random_range: u32, profile_id: usize) -> u32 
         (i64::from(base_delay) + jitter).clamp(i64::from(min_delay), i64::from(max_delay)) as u32
     };
     delay = delay.clamp(min_delay, max_delay);
+
+    // Apply Markov chain bias for delay correlation (level >= 1)
+    if level >= 1 && random_range > 0 {
+        let markov_bias = timing.markov.bias();
+        let biased = f64::from(delay) * (1.0 + markov_bias);
+        delay = biased.round().clamp(f64::from(min_delay), f64::from(max_delay)) as u32;
+    }
 
     let tempo_delta = (level >= 2).then(|| next_gaussian(&mut timing) * 0.006);
     let state = timing
@@ -269,5 +336,33 @@ mod tests {
             let delay = next_delay(1000, 200, 0);
             assert!((800..=1374).contains(&delay));
         }
+    }
+
+    #[test]
+    fn markov_chain_produces_correlated_delays() {
+        let _guard = TEST_LOCK.lock();
+        reset();
+        set_timing_variation_level(1);
+
+        // Collect a sequence of delays and check for correlation
+        let delays: Vec<u32> = (0..200).map(|_| next_delay(1000, 200, 0)).collect();
+
+        // Count consecutive pairs where both are above or both are below median
+        let median = 1000u32;
+        let mut correlated = 0usize;
+        let mut total = 0usize;
+        for window in delays.windows(2) {
+            total += 1;
+            if (window[0] >= median) == (window[1] >= median) {
+                correlated += 1;
+            }
+        }
+
+        // With Markov chain, correlation should be > 50% (random would be ~50%)
+        let correlation_ratio = correlated as f64 / total as f64;
+        assert!(
+            correlation_ratio > 0.50,
+            "Markov chain should produce correlated delays, got ratio {correlation_ratio:.2}"
+        );
     }
 }

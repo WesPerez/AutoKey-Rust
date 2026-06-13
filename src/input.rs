@@ -38,8 +38,22 @@ fn post_window_event(hwnd: isize, vk_code: u16, is_key_up: bool) -> Result<()> {
         if is_extended_key(vk_code) {
             bits |= 1 << 24;
         }
+
+        // Randomize the repeat count field (bits 0-15) to avoid fixed lParam patterns.
+        // Real keyboard events have repeat count = 1 for typical key presses,
+        // but varying it slightly (1-3) makes the pattern harder to fingerprint.
+        let repeat_count = fastrand::u32(1..=3);
+        bits = (bits & !0xFFFF) | repeat_count;
+
+        // Occasionally add the "previous key state" flag (bit 30) on key-up
+        // to mimic real keyboard driver behavior more closely.
         if is_key_up {
             bits |= (1 << 30) | (1 << 31);
+            // Randomly set the "context code" bit (bit 29) on some key-up events
+            // to simulate Alt-key context variations
+            if fastrand::f64() < 0.05 {
+                bits |= 1 << 29;
+            }
         }
 
         PostMessageW(
@@ -55,6 +69,25 @@ fn post_window_event(hwnd: isize, vk_code: u16, is_key_up: bool) -> Result<()> {
         })?;
     }
     Ok(())
+}
+
+/// Generate a randomized dwExtraInfo value.
+/// Instead of a fixed marker (like the old 0x41554B59 "AUKY"), we produce
+/// small random values that blend in with normal keyboard driver output.
+/// Most real keyboard events have dwExtraInfo = 0, but some drivers
+/// (e.g., touch keyboard, remote desktop) set non-zero values.
+fn random_extra_info() -> usize {
+    // 85% chance of 0 (matches most real keyboard input)
+    // 10% chance of a small random value (1-255)
+    // 5% chance of a slightly larger value (256-65535)
+    let r = fastrand::f64();
+    if r < 0.85 {
+        0
+    } else if r < 0.95 {
+        fastrand::u32(1..=255) as usize
+    } else {
+        fastrand::u32(256..=65535) as usize
+    }
 }
 
 fn send_input_event(vk_code: u16, is_key_up: bool) -> Result<()> {
@@ -76,12 +109,13 @@ fn send_input_event(vk_code: u16, is_key_up: bool) -> Result<()> {
                     wScan: 0,
                     dwFlags: flags,
                     time: 0,
-                    dwExtraInfo: 0,
+                    dwExtraInfo: random_extra_info(),
                 },
             },
         };
 
-        let sent = SendInput(&[input], std::mem::size_of::<INPUT>() as i32);
+        // Use direct syscall to bypass API hook detection on SendInput.
+        let sent = crate::syscall::send_input_direct(&[input], std::mem::size_of::<INPUT>() as i32);
         if sent != 1 {
             return Err(anyhow!("SendInput 仅发送了 {sent} 个事件"));
         }
@@ -126,5 +160,25 @@ mod tests {
         assert!(validate_vk(0).is_err());
         assert!(validate_vk(0x41).is_ok());
         assert!(validate_vk(255).is_err());
+    }
+
+    #[test]
+    fn random_extra_info_distribution() {
+        let mut has_zero = false;
+        let mut has_small = false;
+        let mut has_large = false;
+        for _ in 0..500 {
+            let val = random_extra_info();
+            if val == 0 {
+                has_zero = true;
+            } else if val <= 255 {
+                has_small = true;
+            } else {
+                has_large = true;
+            }
+        }
+        assert!(has_zero, "should produce 0 values");
+        assert!(has_small, "should produce small non-zero values");
+        // has_large is probabilistic, may not always trigger in 500 samples
     }
 }

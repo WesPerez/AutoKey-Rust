@@ -7,7 +7,52 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, TryRecvError};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+// ── High-precision timer using QueryPerformanceCounter ──────────────
+// Uses QPC for sub-millisecond timing accuracy instead of relying on
+// the default ~15.6ms Windows timer resolution. Combined with
+// timeBeginPeriod(1) for better sleep precision and a hybrid
+// sleep+busy-wait strategy for the final ~0.5ms.
+
+use once_cell::sync::Lazy;
+use windows::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
+
+struct HiResTimer {
+    freq: i64,
+}
+
+static HI_RES_TIMER: Lazy<HiResTimer> = Lazy::new(|| {
+    let freq = unsafe {
+        let mut f = 1i64;
+        let _ = QueryPerformanceFrequency(&mut f);
+        f.max(1)
+    };
+    HiResTimer { freq }
+});
+
+static TIMER_RESOLUTION_SET: Lazy<bool> = Lazy::new(|| {
+    // Set Windows timer resolution to 1ms for better sleep precision
+    // This affects the entire process but is necessary for accurate timing
+    unsafe { timeBeginPeriod(1) == 0 }
+});
+
+// Link to winmm for timeBeginPeriod/timeEndPeriod
+#[link(name = "winmm")]
+extern "system" {
+    fn timeBeginPeriod(uPeriod: u32) -> u32;
+    fn timeEndPeriod(uPeriod: u32) -> u32;
+}
+
+impl HiResTimer {
+    fn now_ns(&self) -> u64 {
+        unsafe {
+            let mut ticks = 0i64;
+            let _ = QueryPerformanceCounter(&mut ticks);
+            (ticks as u128 * 1_000_000_000 / self.freq as u128) as u64
+        }
+    }
+}
 
 const RECOVERY_DELAY: Duration = Duration::from_millis(100);
 
@@ -28,7 +73,7 @@ impl AutomationEngine {
         let panic_key_running = key_running.clone();
         let panic_status = status.clone();
         let worker = thread::Builder::new()
-            .name("autokey-engine".to_owned())
+            .name(crate::obfuscate::random_thread_name())
             .spawn(move || {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     run_engine(
@@ -63,6 +108,10 @@ impl AutomationEngine {
 impl Drop for AutomationEngine {
     fn drop(&mut self) {
         self.join();
+        // Restore timer resolution on exit
+        unsafe {
+            let _ = timeEndPeriod(1);
+        }
     }
 }
 
@@ -87,6 +136,9 @@ fn run_engine(
     bound_window: Arc<RwLock<Option<isize>>>,
     status: Arc<RwLock<String>>,
 ) {
+    // Ensure high-resolution timer is initialized
+    let _ = *TIMER_RESOLUTION_SET;
+
     while let Ok(command) = commands.recv() {
         let should_start = match command {
             AppCommand::Start => true,
@@ -283,17 +335,32 @@ fn perform_press_until_stopped(
     Ok(stopped)
 }
 
+/// High-precision wait with hybrid sleep + busy-wait strategy.
+/// Uses thread::sleep for the bulk of the duration, then busy-waits
+/// using QueryPerformanceCounter for the final ~0.5ms to achieve
+/// sub-millisecond accuracy.
 fn wait_for_stop(duration: Duration, stop: &AtomicBool) -> bool {
-    let deadline = Instant::now() + duration;
+    if duration.is_zero() {
+        return stop.load(Ordering::Acquire);
+    }
+
+    let deadline_ns = HI_RES_TIMER.now_ns().saturating_add(duration.as_nanos() as u64);
+
+    // Sleep for most of the duration, leaving 0.5ms for busy-wait
+    let sleep_duration = duration.saturating_sub(Duration::from_micros(500));
+    if !sleep_duration.is_zero() {
+        thread::sleep(sleep_duration);
+    }
+
+    // Busy-wait for the remaining time using QPC
     loop {
         if stop.load(Ordering::Acquire) {
             return true;
         }
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
+        if HI_RES_TIMER.now_ns() >= deadline_ns {
             return false;
         }
-        thread::sleep(remaining.min(Duration::from_millis(5)));
+        std::hint::spin_loop();
     }
 }
 
@@ -473,5 +540,12 @@ mod tests {
             let delay = calculate_delay(&config, &key).as_millis();
             assert!((700..=1300).contains(&delay));
         }
+    }
+
+    #[test]
+    fn hi_res_timer_is_monotonic() {
+        let t1 = HI_RES_TIMER.now_ns();
+        let t2 = HI_RES_TIMER.now_ns();
+        assert!(t2 >= t1, "QPC timer should be monotonic");
     }
 }

@@ -57,7 +57,7 @@ impl GlobalHooks {
 
         let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
         let worker = thread::Builder::new()
-            .name("autokey-hooks".to_owned())
+            .name(crate::obfuscate::random_thread_name())
             .spawn(move || {
                 let result = install_hooks();
                 let _ = ready_tx.send(

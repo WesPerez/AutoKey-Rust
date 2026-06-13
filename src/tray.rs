@@ -5,8 +5,10 @@ use tray_icon::{Icon, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use winreg::enums::{HKEY_CURRENT_USER, KEY_READ};
 use winreg::RegKey;
 
+use crate::obfstr;
+
 const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
-const RUN_VALUE: &str = "AutoKey-Rust";
+const RUN_VALUE: &str = "{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrayAction {
@@ -36,7 +38,7 @@ impl TrayController {
         let tray = TrayIconBuilder::new()
             .with_menu(Box::new(menu))
             .with_menu_on_left_click(false)
-            .with_tooltip("AutoKey - 已停止")
+            .with_tooltip(obfstr!("调度器 - 已停止"))
             .with_icon(create_icon(false)?)
             .build()
             .context("无法创建系统托盘图标")?;
@@ -84,7 +86,7 @@ impl TrayController {
         }
 
         let status = if is_running { "运行中" } else { "已停止" };
-        let tooltip = format!("AutoKey - {config_name} - {status}");
+        let tooltip = format!("{} - {} - {}", obfstr!("调度器"), config_name, status);
         let _ = self.tray.set_tooltip(Some(tooltip));
         if let Ok(icon) = create_icon(is_running) {
             let _ = self.tray.set_icon(Some(icon));

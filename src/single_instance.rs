@@ -7,8 +7,8 @@ use windows::Win32::System::Threading::{
     CreateEventW, CreateMutexW, SetEvent, WaitForSingleObject,
 };
 
-const MUTEX_NAME: &str = "Local\\AutoKeyRust.SingleInstance.v2";
-const ACTIVATE_EVENT_NAME: &str = "Local\\AutoKeyRust.Activate.v2";
+const MUTEX_NAME: &str = "Local\\{B3F7A2E1-9C4D-4A8B-B5E6-F1D2C3A4B5E6}";
+const ACTIVATE_EVENT_NAME: &str = "Local\\{D4E8F3A2-1B5C-4D7E-A9F0-E1D2C3B4A5F6}";
 
 pub struct SingleInstance {
     mutex_handle: HANDLE,

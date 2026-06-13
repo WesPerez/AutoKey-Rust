@@ -8,6 +8,8 @@ use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use windows::core::PCWSTR;
+
+use crate::obfstr;
 use windows::Win32::Storage::FileSystem::{
     MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
 };
@@ -330,7 +332,7 @@ pub fn sanitize_config_name(name: &str) -> String {
 }
 
 pub fn app_directory() -> PathBuf {
-    app_data_directory().join("AutoKey-Rust")
+    app_data_directory().join(obfstr!("KeyScheduler"))
 }
 
 pub fn config_directory() -> PathBuf {

@@ -4,6 +4,8 @@ use windows::Win32::Foundation::*;
 use windows::Win32::System::Threading::GetCurrentProcessId;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
+use crate::obfstr;
+
 #[derive(Clone, Debug)]
 pub struct WindowInfo {
     pub hwnd: isize,
@@ -117,7 +119,7 @@ unsafe extern "system" fn find_own_main_window(hwnd: HWND, lparam: LPARAM) -> BO
     }
 
     let title = get_window_title(hwnd.0 as isize);
-    if !title.starts_with("AutoKey") {
+    if !title.starts_with(&obfstr!("AutoKey")) {
         return TRUE;
     }
 
