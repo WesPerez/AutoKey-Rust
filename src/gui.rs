@@ -56,46 +56,45 @@ fn install_chinese_font_fallback(ctx: &egui::Context) {
     ctx.set_fonts(fonts);
 }
 
-/// Configure a refined dark visual theme with better contrast and polish.
+/// Configure a light blue (sky blue) visual theme matching the original C# version.
 fn setup_visuals(ctx: &egui::Context) {
-    let mut visuals = egui::Visuals::dark();
+    let mut visuals = egui::Visuals::light();
 
-    // Refined dark background palette
-    visuals.dark_mode = true;
-    visuals.override_text_color = Some(egui::Color32::from_rgb(220, 225, 232));
-    visuals.widgets.noninteractive.bg_fill = egui::Color32::from_rgb(30, 32, 38);
-    visuals.widgets.noninteractive.weak_bg_fill = egui::Color32::from_rgb(35, 37, 44);
-    visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(140, 148, 160));
+    // Sky blue accent palette inspired by the original C# version (#1565C0 primary)
+    visuals.override_text_color = Some(egui::Color32::from_rgb(51, 51, 51));
 
-    visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(42, 45, 53);
-    visuals.widgets.inactive.weak_bg_fill = egui::Color32::from_rgb(38, 41, 48);
-    visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(190, 196, 206));
-    visuals.widgets.inactive.rounding = egui::Rounding::same(6.0);
+    visuals.widgets.noninteractive.bg_fill = egui::Color32::from_rgb(240, 243, 248);
+    visuals.widgets.noninteractive.weak_bg_fill = egui::Color32::from_rgb(245, 247, 250);
+    visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(170, 175, 185));
 
-    visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(52, 56, 66);
-    visuals.widgets.hovered.weak_bg_fill = egui::Color32::from_rgb(48, 52, 62);
-    visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(230, 235, 242));
-    visuals.widgets.hovered.rounding = egui::Rounding::same(6.0);
+    visuals.widgets.inactive.bg_fill = egui::Color32::WHITE;
+    visuals.widgets.inactive.weak_bg_fill = egui::Color32::from_rgb(248, 249, 252);
+    visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(80, 80, 80));
+    visuals.widgets.inactive.rounding = egui::Rounding::same(4.0);
 
-    visuals.widgets.active.bg_fill = egui::Color32::from_rgb(58, 63, 75);
-    visuals.widgets.active.weak_bg_fill = egui::Color32::from_rgb(54, 58, 70);
+    visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(232, 238, 248);
+    visuals.widgets.hovered.weak_bg_fill = egui::Color32::from_rgb(228, 235, 246);
+    visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(21, 101, 192));
+    visuals.widgets.hovered.rounding = egui::Rounding::same(4.0);
+
+    visuals.widgets.active.bg_fill = egui::Color32::from_rgb(21, 101, 192);
+    visuals.widgets.active.weak_bg_fill = egui::Color32::from_rgb(21, 101, 192);
     visuals.widgets.active.fg_stroke = egui::Stroke::new(1.0, egui::Color32::WHITE);
-    visuals.widgets.active.rounding = egui::Rounding::same(6.0);
+    visuals.widgets.active.rounding = egui::Rounding::same(4.0);
 
-    visuals.selection.bg_fill = egui::Color32::from_rgb(45, 100, 180);
-    visuals.selection.stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(90, 155, 230));
+    visuals.selection.bg_fill = egui::Color32::from_rgb(21, 101, 192);
+    visuals.selection.stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(21, 101, 192));
 
-    visuals.panel_fill = egui::Color32::from_rgb(28, 30, 36);
-    visuals.window_fill = egui::Color32::from_rgb(34, 37, 44);
-    visuals.faint_bg_color = egui::Color32::from_rgb(38, 41, 48);
+    visuals.panel_fill = egui::Color32::from_rgb(240, 243, 248);
+    visuals.window_fill = egui::Color32::WHITE;
+    visuals.faint_bg_color = egui::Color32::from_rgb(235, 238, 244);
 
     ctx.set_visuals(visuals);
 
-    // Better spacing
     let mut style = (*ctx.style()).clone();
-    style.spacing.item_spacing = egui::vec2(8.0, 6.0);
-    style.spacing.button_padding = egui::vec2(12.0, 6.0);
-    style.spacing.interact_size = egui::vec2(40.0, 24.0);
+    style.spacing.item_spacing = egui::vec2(8.0, 5.0);
+    style.spacing.button_padding = egui::vec2(10.0, 5.0);
+    style.spacing.interact_size = egui::vec2(36.0, 22.0);
     ctx.set_style(style);
 }
 
@@ -362,20 +361,20 @@ impl AutoKeyApp {
 
     fn render_header(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("header")
-            .exact_height(56.0)
+            .exact_height(52.0)
+            .frame(egui::Frame::none().fill(egui::Color32::WHITE).inner_margin(egui::Margin::symmetric(12.0, 6.0)))
             .show(ctx, |ui| {
-                ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     ui.vertical(|ui| {
-                        ui.label(egui::RichText::new(obfstr!("调度器")).size(20.0).strong().color(egui::Color32::from_rgb(230, 235, 245)));
+                        ui.label(egui::RichText::new(obfstr!("调度器")).size(18.0).strong().color(egui::Color32::from_rgb(21, 101, 192)));
                         ui.label(
                             egui::RichText::new("Windows 按键调度器")
-                                .size(11.0)
-                                .color(egui::Color32::from_rgb(120, 130, 148)),
+                                .size(10.0)
+                                .color(egui::Color32::from_rgb(136, 136, 136)),
                         );
                     });
 
-                    let right_size = egui::vec2(ui.available_width(), 40.0);
+                    let right_size = egui::vec2(ui.available_width(), 36.0);
                     ui.allocate_ui_with_layout(
                         right_size,
                         egui::Layout::right_to_left(egui::Align::Center),
@@ -386,19 +385,19 @@ impl AutoKeyApp {
                             } else {
                                 "启动"
                             })
-                            .min_size(egui::vec2(72.0, 32.0))
-                            .rounding(egui::Rounding::same(8.0))
+                            .min_size(egui::vec2(70.0, 30.0))
+                            .rounding(egui::Rounding::same(4.0))
                             .fill(if running {
-                                egui::Color32::from_rgb(180, 55, 55)
+                                egui::Color32::from_rgb(244, 67, 54)
                             } else {
-                                egui::Color32::from_rgb(40, 140, 90)
+                                egui::Color32::from_rgb(76, 175, 80)
                             })
                             .stroke(egui::Stroke::new(
                                 1.0,
                                 if running {
-                                    egui::Color32::from_rgb(200, 80, 80)
+                                    egui::Color32::from_rgb(211, 47, 47)
                                 } else {
-                                    egui::Color32::from_rgb(60, 170, 115)
+                                    egui::Color32::from_rgb(56, 142, 60)
                                 },
                             ));
                             if ui
@@ -422,46 +421,43 @@ impl AutoKeyApp {
                                 } else {
                                     "已停止"
                                 })
-                                .size(13.0)
+                                .size(12.0)
                                 .color(if running {
-                                    egui::Color32::from_rgb(80, 200, 130)
+                                    egui::Color32::from_rgb(76, 175, 80)
                                 } else {
-                                    egui::Color32::from_rgb(120, 130, 148)
+                                    egui::Color32::from_rgb(136, 136, 136)
                                 }),
                             );
                         },
                     );
                 });
-                ui.add_space(2.0);
             });
     }
 
     fn render_settings(&mut self, ctx: &egui::Context) {
         egui::SidePanel::left("settings")
             .resizable(false)
-            .exact_width(300.0)
-            .frame(egui::Frame::none().fill(egui::Color32::from_rgb(32, 34, 40)).inner_margin(egui::Margin::same(12.0)))
+            .exact_width(280.0)
+            .frame(egui::Frame::none().fill(egui::Color32::WHITE).inner_margin(egui::Margin::same(10.0)))
             .show(ctx, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| {
+                    ui.label(egui::RichText::new("运行设置").size(13.0).strong().color(egui::Color32::from_rgb(21, 101, 192)));
                     ui.add_space(4.0);
-                    ui.label(egui::RichText::new("运行设置").size(14.0).strong().color(egui::Color32::from_rgb(200, 210, 225)));
-                    ui.add_space(6.0);
                     self.render_run_settings(ui);
 
-                    ui.add_space(12.0);
-                    ui.separator();
                     ui.add_space(8.0);
-                    ui.label(egui::RichText::new("发送目标").size(14.0).strong().color(egui::Color32::from_rgb(200, 210, 225)));
+                    ui.separator();
                     ui.add_space(6.0);
+                    ui.label(egui::RichText::new("发送目标").size(13.0).strong().color(egui::Color32::from_rgb(21, 101, 192)));
+                    ui.add_space(4.0);
                     self.render_target_settings(ui);
 
-                    ui.add_space(12.0);
+                    ui.add_space(8.0);
                     ui.separator();
-                    ui.add_space(8.0);
-                    ui.label(egui::RichText::new("配置档").size(14.0).strong().color(egui::Color32::from_rgb(200, 210, 225)));
                     ui.add_space(6.0);
+                    ui.label(egui::RichText::new("配置档").size(13.0).strong().color(egui::Color32::from_rgb(21, 101, 192)));
+                    ui.add_space(4.0);
                     self.render_profile_settings(ui);
-                    ui.add_space(8.0);
                 });
             });
     }
@@ -720,169 +716,175 @@ impl AutoKeyApp {
     }
 
     fn render_key_table(&mut self, ctx: &egui::Context) {
-        egui::CentralPanel::default().show(ctx, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    if ui.button("全选").clicked() {
-                        for key in &mut self.config.write().keys {
-                            key.enabled = true;
+        egui::CentralPanel::default()
+            .frame(egui::Frame::none().fill(egui::Color32::from_rgb(240, 243, 248)).inner_margin(egui::Margin::same(8.0)))
+            .show(ctx, |ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        if ui.button("全选").clicked() {
+                            for key in &mut self.config.write().keys {
+                                key.enabled = true;
+                            }
                         }
-                    }
-                    if ui.button("反选").clicked() {
-                        for key in &mut self.config.write().keys {
-                            key.enabled = !key.enabled;
+                        if ui.button("反选").clicked() {
+                            for key in &mut self.config.write().keys {
+                                key.enabled = !key.enabled;
+                            }
                         }
-                    }
-                });
-                ui.add_space(6.0);
+                    });
+                    ui.add_space(4.0);
 
-                // Table header
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("#").strong().color(egui::Color32::from_rgb(160, 170, 190)));
-                    ui.add_space(8.0);
-                    ui.label(egui::RichText::new("按键").strong().color(egui::Color32::from_rgb(160, 170, 190)));
-                    ui.add_space(8.0);
-                    ui.label(egui::RichText::new("基础延迟(ms)").strong().color(egui::Color32::from_rgb(160, 170, 190)));
-                    ui.add_space(8.0);
-                    ui.label(egui::RichText::new("随机范围(ms)").strong().color(egui::Color32::from_rgb(160, 170, 190)));
-                    ui.add_space(8.0);
-                    ui.label(egui::RichText::new("启用").strong().color(egui::Color32::from_rgb(160, 170, 190)));
-                    ui.add_space(8.0);
-                    ui.label(egui::RichText::new("状态").strong().color(egui::Color32::from_rgb(160, 170, 190)));
-                });
-                ui.separator();
-
-                #[derive(Default)]
-                struct RowEdit {
-                    base_delay: Option<u32>,
-                    random_range: Option<u32>,
-                    enabled: Option<bool>,
-                }
-
-                let mut edits: Vec<RowEdit> =
-                    (0..KEY_SLOT_COUNT).map(|_| RowEdit::default()).collect();
-
-                {
-                    let config = self.config.read();
-                    let key_running = self.key_running.read();
-
-                    for (index, key) in config.keys.iter().enumerate() {
-                        let is_capturing = self.capturing_key == Some(index);
-                        let is_active = key_running.get(index).copied().unwrap_or(false);
-
-                        // Alternating row background
-                        let row_bg = if index % 2 == 0 {
-                            egui::Color32::TRANSPARENT
-                        } else {
-                            egui::Color32::from_rgb(36, 38, 45)
-                        };
-
-                        egui::Frame::none()
-                            .fill(row_bg)
-                            .rounding(egui::Rounding::same(3.0))
-                            .show(ui, |ui| {
-                                ui.horizontal(|ui| {
-                                    ui.label(egui::RichText::new(format!("{}", index + 1)).color(egui::Color32::from_rgb(130, 140, 158)));
-                                    ui.add_space(8.0);
-
-                                    let button_text = if is_capturing {
-                                        "按任意键..."
-                                    } else {
-                                        &key.key_name
-                                    };
-                                    let button =
-                                        egui::Button::new(button_text).min_size(egui::vec2(100.0, 24.0)).rounding(egui::Rounding::same(5.0));
-                                    if ui.add(button).clicked() {
-                                        if is_capturing {
-                                            self.capturing_key = None;
-                                            GlobalHooks::cancel_capture();
-                                        } else {
-                                            self.capturing_key = Some(index);
-                                            GlobalHooks::begin_key_capture();
-                                        }
-                                    }
-                                    ui.add_space(8.0);
-
-                                    let mut base_delay = key.base_delay;
-                                    ui.add(
-                                        egui::DragValue::new(&mut base_delay)
-                                            .range(MIN_DELAY_MS..=MAX_DELAY_MS)
-                                            .speed(10),
-                                    );
-                                    if base_delay != key.base_delay {
-                                        edits[index].base_delay = Some(base_delay);
-                                    }
-                                    ui.add_space(8.0);
-
-                                    let mut random_range = key.random_range;
-                                    ui.add(
-                                        egui::DragValue::new(&mut random_range)
-                                            .range(0..=MAX_DELAY_MS)
-                                            .speed(10),
-                                    );
-                                    if random_range != key.random_range {
-                                        edits[index].random_range = Some(random_range);
-                                    }
-                                    ui.add_space(8.0);
-
-                                    let mut enabled = key.enabled;
-                                    ui.checkbox(&mut enabled, "");
-                                    if enabled != key.enabled {
-                                        edits[index].enabled = Some(enabled);
-                                    }
-                                    ui.add_space(8.0);
-
-                                    if is_active {
-                                        ui.label(
-                                            egui::RichText::new("\u{25cf}")
-                                                .color(egui::Color32::from_rgb(80, 200, 130)),
-                                        );
-                                    } else {
-                                        ui.label(
-                                            egui::RichText::new("\u{25cb}")
-                                                .color(egui::Color32::from_rgb(90, 100, 115)),
-                                        );
-                                    }
-                                });
+                    // Table header
+                    egui::Frame::none()
+                        .fill(egui::Color32::from_rgb(245, 245, 245))
+                        .rounding(egui::Rounding::same(3.0))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new("#").strong().color(egui::Color32::from_rgb(85, 85, 85)));
+                                ui.add_space(8.0);
+                                ui.label(egui::RichText::new("按键").strong().color(egui::Color32::from_rgb(85, 85, 85)));
+                                ui.add_space(8.0);
+                                ui.label(egui::RichText::new("基础延迟(ms)").strong().color(egui::Color32::from_rgb(85, 85, 85)));
+                                ui.add_space(8.0);
+                                ui.label(egui::RichText::new("随机范围(ms)").strong().color(egui::Color32::from_rgb(85, 85, 85)));
+                                ui.add_space(8.0);
+                                ui.label(egui::RichText::new("启用").strong().color(egui::Color32::from_rgb(85, 85, 85)));
+                                ui.add_space(8.0);
+                                ui.label(egui::RichText::new("状态").strong().color(egui::Color32::from_rgb(85, 85, 85)));
                             });
-                    }
-                }
+                        });
+                    ui.separator();
 
-                if edits.iter().any(|e| {
-                    e.base_delay.is_some() || e.random_range.is_some() || e.enabled.is_some()
-                }) {
-                    let mut config = self.config.write();
-                    for (index, edit) in edits.into_iter().enumerate() {
-                        if let Some(key) = config.keys.get_mut(index) {
-                            if let Some(d) = edit.base_delay {
-                                key.base_delay = d;
-                            }
-                            if let Some(r) = edit.random_range {
-                                key.random_range = r;
-                            }
-                            if let Some(e) = edit.enabled {
-                                key.enabled = e;
+                    #[derive(Default)]
+                    struct RowEdit {
+                        base_delay: Option<u32>,
+                        random_range: Option<u32>,
+                        enabled: Option<bool>,
+                    }
+
+                    let mut edits: Vec<RowEdit> =
+                        (0..KEY_SLOT_COUNT).map(|_| RowEdit::default()).collect();
+
+                    {
+                        let config = self.config.read();
+                        let key_running = self.key_running.read();
+
+                        for (index, key) in config.keys.iter().enumerate() {
+                            let is_capturing = self.capturing_key == Some(index);
+                            let is_active = key_running.get(index).copied().unwrap_or(false);
+
+                            let row_bg = if index % 2 == 0 {
+                                egui::Color32::WHITE
+                            } else {
+                                egui::Color32::from_rgb(248, 249, 252)
+                            };
+
+                            egui::Frame::none()
+                                .fill(row_bg)
+                                .rounding(egui::Rounding::same(3.0))
+                                .inner_margin(egui::Margin::symmetric(4.0, 3.0))
+                                .show(ui, |ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.label(egui::RichText::new(format!("{}", index + 1)).color(egui::Color32::from_rgb(136, 136, 136)));
+                                        ui.add_space(8.0);
+
+                                        let button_text = if is_capturing {
+                                            "按任意键..."
+                                        } else {
+                                            &key.key_name
+                                        };
+                                        let button =
+                                            egui::Button::new(button_text).min_size(egui::vec2(90.0, 22.0)).rounding(egui::Rounding::same(3.0));
+                                        if ui.add(button).clicked() {
+                                            if is_capturing {
+                                                self.capturing_key = None;
+                                                GlobalHooks::cancel_capture();
+                                            } else {
+                                                self.capturing_key = Some(index);
+                                                GlobalHooks::begin_key_capture();
+                                            }
+                                        }
+                                        ui.add_space(8.0);
+
+                                        let mut base_delay = key.base_delay;
+                                        ui.add(
+                                            egui::DragValue::new(&mut base_delay)
+                                                .range(MIN_DELAY_MS..=MAX_DELAY_MS)
+                                                .speed(10),
+                                        );
+                                        if base_delay != key.base_delay {
+                                            edits[index].base_delay = Some(base_delay);
+                                        }
+                                        ui.add_space(8.0);
+
+                                        let mut random_range = key.random_range;
+                                        ui.add(
+                                            egui::DragValue::new(&mut random_range)
+                                                .range(0..=MAX_DELAY_MS)
+                                                .speed(10),
+                                        );
+                                        if random_range != key.random_range {
+                                            edits[index].random_range = Some(random_range);
+                                        }
+                                        ui.add_space(8.0);
+
+                                        let mut enabled = key.enabled;
+                                        ui.checkbox(&mut enabled, "");
+                                        if enabled != key.enabled {
+                                            edits[index].enabled = Some(enabled);
+                                        }
+                                        ui.add_space(8.0);
+
+                                        if is_active {
+                                            ui.label(
+                                                egui::RichText::new("\u{25cf}")
+                                                    .color(egui::Color32::from_rgb(76, 175, 80)),
+                                            );
+                                        } else {
+                                            ui.label(
+                                                egui::RichText::new("\u{25cb}")
+                                                    .color(egui::Color32::from_rgb(189, 189, 189)),
+                                            );
+                                        }
+                                    });
+                                });
+                        }
+                    }
+
+                    if edits.iter().any(|e| {
+                        e.base_delay.is_some() || e.random_range.is_some() || e.enabled.is_some()
+                    }) {
+                        let mut config = self.config.write();
+                        for (index, edit) in edits.into_iter().enumerate() {
+                            if let Some(key) = config.keys.get_mut(index) {
+                                if let Some(d) = edit.base_delay {
+                                    key.base_delay = d;
+                                }
+                                if let Some(r) = edit.random_range {
+                                    key.random_range = r;
+                                }
+                                if let Some(e) = edit.enabled {
+                                    key.enabled = e;
+                                }
                             }
                         }
                     }
-                }
+                });
             });
-        });
     }
 
     fn render_status_bar(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::bottom("status_bar")
-            .exact_height(26.0)
-            .frame(egui::Frame::none().fill(egui::Color32::from_rgb(24, 26, 32)).inner_margin(egui::Margin::symmetric(12.0, 4.0)))
+            .exact_height(24.0)
+            .frame(egui::Frame::none().fill(egui::Color32::from_rgb(235, 238, 244)).inner_margin(egui::Margin::symmetric(10.0, 3.0)))
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     let status = self.status.read().clone();
-                    ui.label(egui::RichText::new(status).size(11.0).color(egui::Color32::from_rgb(140, 150, 168)));
+                    ui.label(egui::RichText::new(status).size(11.0).color(egui::Color32::from_rgb(119, 119, 119)));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if !self.hooks_available {
                             ui.colored_label(
-                                egui::Color32::from_rgb(220, 160, 40),
+                                egui::Color32::from_rgb(230, 81, 0),
                                 "全局快捷键不可用",
                             );
                         }
@@ -905,6 +907,7 @@ impl eframe::App for AutoKeyApp {
                 }
                 TrayAction::Exit => {
                     self.really_closing = true;
+                    let _ = self.command_tx.send(AppCommand::Exit);
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
                 TrayAction::None => {}
@@ -963,10 +966,56 @@ pub fn run_gui(
         (prefs.window_width, prefs.window_height)
     };
 
+    let icon = {
+        const SIZE: usize = 32;
+        let mut rgba = vec![0u8; SIZE * SIZE * 4];
+        let bg_color: [u8; 4] = [21, 101, 192, 255];
+        let accent: [u8; 4] = [211, 47, 47, 255];
+        let white: [u8; 4] = [255, 255, 255, 255];
+        for y in 0..SIZE {
+            for x in 0..SIZE {
+                let offset = (y * SIZE + x) * 4;
+                let dx = x as f32 - 15.5;
+                let dy = y as f32 - 15.5;
+                let distance = (dx * dx + dy * dy).sqrt();
+                let color = if distance <= 14.0 {
+                    bg_color
+                } else if distance <= 15.5 {
+                    let alpha = ((15.5 - distance) / 1.5 * 255.0) as u8;
+                    [bg_color[0], bg_color[1], bg_color[2], alpha]
+                } else {
+                    [0, 0, 0, 0]
+                };
+                rgba[offset..offset + 4].copy_from_slice(&color);
+            }
+        }
+        for y in 0..SIZE {
+            for x in 0..SIZE {
+                let offset = (y * SIZE + x) * 4;
+                let dx = x as f32 - 15.5;
+                let dy = y as f32 - 15.5;
+                let distance = (dx * dx + dy * dy).sqrt();
+                if distance <= 8.0 {
+                    rgba[offset..offset + 4].copy_from_slice(&accent);
+                } else if distance <= 9.5 {
+                    let alpha = ((9.5 - distance) / 1.5 * 255.0) as u8;
+                    let blended = [white[0], white[1], white[2], alpha.min(rgba[offset + 3])];
+                    rgba[offset..offset + 4].copy_from_slice(&blended);
+                }
+            }
+        }
+        Arc::new(egui::IconData {
+            width: SIZE as u32,
+            height: SIZE as u32,
+            rgba,
+        })
+    };
+
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([width, height])
-            .with_title(title),
+            .with_title(title)
+            .with_icon(icon),
         ..Default::default()
     };
 

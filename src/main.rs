@@ -6,6 +6,7 @@ mod gui;
 mod hook;
 mod hotkey;
 mod humanizer;
+mod icon_gen;
 mod input;
 mod logging;
 mod obfuscate;

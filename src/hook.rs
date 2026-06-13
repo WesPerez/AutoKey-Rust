@@ -1,4 +1,4 @@
-use crate::hotkey::{normalize_vk, Hotkey, VK_ALT, VK_CONTROL};
+use crate::hotkey::{is_modifier, normalize_vk, Hotkey, VK_ALT, VK_CONTROL};
 use crate::{window, AppCommand, UiAction};
 use anyhow::{anyhow, Result};
 use once_cell::sync::Lazy;
@@ -247,7 +247,11 @@ fn handle_keyboard_event(event: &KBDLLHOOKSTRUCT, message: u32) -> bool {
         }
     } else if is_key_up {
         PRESSED_KEYS.lock().remove(&raw_vk);
-        if PRESSED_KEYS.lock().is_empty() {
+        // Reset HOTKEY_FIRED when a non-modifier key is released (not when ALL keys are released).
+        // This allows re-firing the hotkey when the user holds modifiers and presses
+        // the trigger key again (e.g. Ctrl+Alt held, Space pressed multiple times),
+        // matching the C# version's MOD_NOREPEAT behavior.
+        if !is_modifier(vk) || PRESSED_KEYS.lock().is_empty() {
             HOTKEY_FIRED.store(false, Ordering::Relaxed);
         }
 

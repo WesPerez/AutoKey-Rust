@@ -98,11 +98,16 @@ impl TrayController {
 fn create_icon(is_running: bool) -> Result<Icon> {
     const SIZE: usize = 32;
     let mut rgba = vec![0u8; SIZE * SIZE * 4];
-    let accent = if is_running {
-        [55, 180, 120, 255]
+
+    // Sky blue accent matching the C# version (#1565C0)
+    let bg_color: [u8; 4] = [21, 101, 192, 255];
+    // Status circle: green when running, red when stopped (matching C# version)
+    let accent: [u8; 4] = if is_running {
+        [76, 175, 80, 255]   // #4CAF50 green
     } else {
-        [203, 72, 72, 255]
+        [211, 47, 47, 255]   // #D32F2F red
     };
+    let white: [u8; 4] = [255, 255, 255, 255];
 
     for y in 0..SIZE {
         for x in 0..SIZE {
@@ -110,14 +115,43 @@ fn create_icon(is_running: bool) -> Result<Icon> {
             let dx = x as f32 - 15.5;
             let dy = y as f32 - 15.5;
             let distance = (dx * dx + dy * dy).sqrt();
-            let color = if distance <= 12.5 {
-                accent
+
+            let color = if distance <= 14.0 {
+                // Rounded square background
+                bg_color
+            } else if distance <= 15.5 {
+                // Anti-aliased edge
+                let alpha = ((15.5 - distance) / 1.5 * 255.0) as u8;
+                [bg_color[0], bg_color[1], bg_color[2], alpha]
             } else {
-                [28, 30, 34, 255]
+                [0, 0, 0, 0]
             };
             rgba[offset..offset + 4].copy_from_slice(&color);
         }
     }
+
+    // Draw status circle (center, radius 8)
+    for y in 0..SIZE {
+        for x in 0..SIZE {
+            let offset = (y * SIZE + x) * 4;
+            let dx = x as f32 - 15.5;
+            let dy = y as f32 - 15.5;
+            let distance = (dx * dx + dy * dy).sqrt();
+
+            if distance <= 8.0 {
+                rgba[offset..offset + 4].copy_from_slice(&accent);
+            } else if distance <= 9.5 {
+                // White border ring
+                let alpha = ((9.5 - distance) / 1.5 * 255.0) as u8;
+                let blended = [
+                    white[0], white[1], white[2],
+                    alpha.min(rgba[offset + 3])
+                ];
+                rgba[offset..offset + 4].copy_from_slice(&blended);
+            }
+        }
+    }
+
     Icon::from_rgba(rgba, SIZE as u32, SIZE as u32).context("无法创建托盘图标")
 }
 

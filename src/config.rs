@@ -111,6 +111,9 @@ impl AppPreferences {
     pub fn sanitize(&mut self) {
         self.selected_config = sanitize_config_name(&self.selected_config);
         self.cycle_config_hotkey = self.cycle_config_hotkey.trim().chars().take(64).collect();
+        if self.cycle_config_hotkey.is_empty() {
+            self.cycle_config_hotkey = DEFAULT_CYCLE_HOTKEY.to_owned();
+        }
         if !self.window_width.is_finite() {
             self.window_width = 1040.0;
         }
