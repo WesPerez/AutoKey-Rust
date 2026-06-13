@@ -6,9 +6,8 @@
 /logs/
 /app-state.json
 
-# Distribution staging folders; keep release archives
-/dist/*/
-!/dist/*.zip
+# Distribution output
+/dist/
 
 # IDE
 .vscode/

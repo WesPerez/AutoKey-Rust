@@ -10,6 +10,7 @@ use crate::window::{enumerate_windows, get_window_title, is_window_valid, Window
 use crate::{AppCommand, UiAction};
 use eframe::egui;
 use parking_lot::RwLock;
+use std::fs;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
@@ -17,6 +18,42 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 const AUTOSAVE_INTERVAL: Duration = Duration::from_millis(750);
+
+const CHINESE_FONT_CANDIDATES: &[&str] = &[
+    r"C:\Windows\Fonts\NotoSansSC-VF.ttf",
+    r"C:\Windows\Fonts\MiSans-Normal.ttf",
+    r"C:\Windows\Fonts\msyh.ttf",
+    r"C:\Windows\Fonts\msyh.ttc",
+    r"C:\Windows\Fonts\simhei.ttf",
+    r"C:\Windows\Fonts\simsun.ttc",
+];
+
+fn install_chinese_font_fallback(ctx: &egui::Context) {
+    let Some(bytes) = CHINESE_FONT_CANDIDATES
+        .iter()
+        .find_map(|path| fs::read(path).ok())
+    else {
+        crate::logging::log_error(
+            "font",
+            &anyhow::anyhow!("未找到可用中文字体，界面中文可能显示异常"),
+        );
+        return;
+    };
+
+    let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.insert(
+        "chinese_fallback".to_owned(),
+        egui::FontData::from_owned(bytes),
+    );
+
+    for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+        if let Some(family_fonts) = fonts.families.get_mut(&family) {
+            family_fonts.push("chinese_fallback".to_owned());
+        }
+    }
+
+    ctx.set_fonts(fonts);
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HotkeyCaptureTarget {
@@ -299,45 +336,45 @@ impl AutoKeyApp {
                         right_size,
                         egui::Layout::right_to_left(egui::Align::Center),
                         |ui| {
-                        let running = self.is_running.load(Ordering::Acquire);
-                        let button = egui::Button::new(if running {
-                            "\u{505c}\u{6b62}"
-                        } else {
-                            "\u{542f}\u{52a8}"
-                        })
-                        .min_size(egui::vec2(72.0, 32.0))
-                        .fill(if running {
-                            egui::Color32::from_rgb(171, 64, 64)
-                        } else {
-                            egui::Color32::from_rgb(49, 126, 95)
-                        });
-                        if ui
-                            .add(button)
-                            .on_hover_text(
-                                "\u{4e5f}\u{53ef}\u{4ee5}\u{5355}\u{72ec}\u{6309}\u{4e0b}\u{5de6} Alt \u{5207}\u{6362}\u{8fd0}\u{884c}\u{72b6}\u{6001}",
-                            )
-                            .clicked()
-                        {
-                            let command = if running {
-                                AppCommand::Stop
+                            let running = self.is_running.load(Ordering::Acquire);
+                            let button = egui::Button::new(if running {
+                                "\u{505c}\u{6b62}"
                             } else {
-                                AppCommand::Start
-                            };
-                            let _ = self.command_tx.send(command);
-                        }
-                        ui.add_space(8.0);
-                        ui.label(
-                            egui::RichText::new(if running {
-                                "\u{8fd0}\u{884c}\u{4e2d}"
-                            } else {
-                                "\u{5df2}\u{505c}\u{6b62}"
+                                "\u{542f}\u{52a8}"
                             })
-                            .color(if running {
-                                egui::Color32::from_rgb(76, 176, 128)
+                            .min_size(egui::vec2(72.0, 32.0))
+                            .fill(if running {
+                                egui::Color32::from_rgb(171, 64, 64)
                             } else {
-                                ui.visuals().weak_text_color()
-                            }),
-                        );
+                                egui::Color32::from_rgb(49, 126, 95)
+                            });
+                            if ui
+                                .add(button)
+                                .on_hover_text(
+                                    "\u{4e5f}\u{53ef}\u{4ee5}\u{5355}\u{72ec}\u{6309}\u{4e0b}\u{5de6} Alt \u{5207}\u{6362}\u{8fd0}\u{884c}\u{72b6}\u{6001}",
+                                )
+                                .clicked()
+                            {
+                                let command = if running {
+                                    AppCommand::Stop
+                                } else {
+                                    AppCommand::Start
+                                };
+                                let _ = self.command_tx.send(command);
+                            }
+                            ui.add_space(8.0);
+                            ui.label(
+                                egui::RichText::new(if running {
+                                    "\u{8fd0}\u{884c}\u{4e2d}"
+                                } else {
+                                    "\u{5df2}\u{505c}\u{6b62}"
+                                })
+                                .color(if running {
+                                    egui::Color32::from_rgb(76, 176, 128)
+                                } else {
+                                    ui.visuals().weak_text_color()
+                                }),
+                            );
                         },
                     );
                 });
@@ -869,6 +906,7 @@ pub fn run_gui(
         "AutoKey",
         options,
         Box::new(move |cc| {
+            install_chinese_font_fallback(&cc.egui_ctx);
             let app = AutoKeyApp::new(
                 config,
                 preferences,
