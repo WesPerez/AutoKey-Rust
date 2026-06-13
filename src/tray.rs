@@ -19,9 +19,7 @@ pub enum TrayAction {
 
 pub struct TrayController {
     tray: TrayIcon,
-    show_id: MenuId,
     autostart_id: MenuId,
-    exit_id: MenuId,
     autostart_item: CheckMenuItem,
     last_state: Option<(bool, String)>,
 }
@@ -29,10 +27,10 @@ pub struct TrayController {
 impl TrayController {
     pub fn new() -> Result<Self> {
         let menu = Menu::new();
-        let show_item = MenuItem::new("显示", true, None);
-        let autostart_item = CheckMenuItem::new("开机自启", true, is_autostart_enabled(), None);
+        let show_item = MenuItem::with_id("show", "显示", true, None);
+        let autostart_item = CheckMenuItem::with_id("autostart", "开机自启", true, is_autostart_enabled(), None);
         let separator = PredefinedMenuItem::separator();
-        let exit_item = MenuItem::new("退出", true, None);
+        let exit_item = MenuItem::with_id("exit", "退出", true, None);
         menu.append_items(&[&show_item, &autostart_item, &separator, &exit_item])?;
 
         let tray = TrayIconBuilder::new()
@@ -45,9 +43,7 @@ impl TrayController {
 
         Ok(Self {
             tray,
-            show_id: show_item.id().clone(),
             autostart_id: autostart_item.id().clone(),
-            exit_id: exit_item.id().clone(),
             autostart_item,
             last_state: None,
         })
@@ -61,12 +57,6 @@ impl TrayController {
         }
 
         while let Ok(event) = MenuEvent::receiver().try_recv() {
-            if event.id == self.show_id {
-                return TrayAction::Show;
-            }
-            if event.id == self.exit_id {
-                return TrayAction::Exit;
-            }
             if event.id == self.autostart_id {
                 let enabled = !is_autostart_enabled();
                 if set_autostart(enabled).is_ok() {
@@ -74,6 +64,9 @@ impl TrayController {
                 } else {
                     self.autostart_item.set_checked(is_autostart_enabled());
                 }
+                // Note: show/exit events are consumed by TrayPollWake background thread
+                // which works even when the window is hidden.
+                // We only handle autostart here since it needs the CheckMenuItem reference.
             }
         }
         TrayAction::None
@@ -117,10 +110,8 @@ fn create_icon(is_running: bool) -> Result<Icon> {
             let distance = (dx * dx + dy * dy).sqrt();
 
             let color = if distance <= 14.0 {
-                // Rounded square background
                 bg_color
             } else if distance <= 15.5 {
-                // Anti-aliased edge
                 let alpha = ((15.5 - distance) / 1.5 * 255.0) as u8;
                 [bg_color[0], bg_color[1], bg_color[2], alpha]
             } else {
@@ -130,7 +121,6 @@ fn create_icon(is_running: bool) -> Result<Icon> {
         }
     }
 
-    // Draw status circle (center, radius 8)
     for y in 0..SIZE {
         for x in 0..SIZE {
             let offset = (y * SIZE + x) * 4;
@@ -141,7 +131,6 @@ fn create_icon(is_running: bool) -> Result<Icon> {
             if distance <= 8.0 {
                 rgba[offset..offset + 4].copy_from_slice(&accent);
             } else if distance <= 9.5 {
-                // White border ring
                 let alpha = ((9.5 - distance) / 1.5 * 255.0) as u8;
                 let blended = [
                     white[0], white[1], white[2],

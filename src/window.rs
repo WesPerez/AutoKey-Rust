@@ -29,6 +29,17 @@ pub fn is_own_process_window(hwnd: isize) -> bool {
     }
 }
 
+pub fn find_own_hwnd() -> Option<isize> {
+    let mut found = 0isize;
+    unsafe {
+        let _ = EnumWindows(
+            Some(find_own_main_window),
+            LPARAM((&mut found as *mut isize) as isize),
+        );
+    }
+    if found == 0 { None } else { Some(found) }
+}
+
 pub fn restore_own_main_window() -> bool {
     let mut found = 0isize;
     // SAFETY: EnumWindows is synchronous, so the output pointer remains valid.

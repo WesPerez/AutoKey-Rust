@@ -1,10 +1,10 @@
-use crate::hotkey::{is_modifier, normalize_vk, Hotkey, VK_ALT, VK_CONTROL};
+use crate::hotkey::{is_modifier, normalize_vk, Hotkey, VK_ALT, VK_CONTROL, VK_SHIFT, VK_WIN};
 use crate::{window, AppCommand, UiAction};
 use anyhow::{anyhow, Result};
 use once_cell::sync::Lazy;
 use parking_lot::{Mutex, RwLock};
 use std::collections::BTreeSet;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
@@ -15,6 +15,20 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{VK_LMENU, VK_MENU};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 const RIGHT_DRAG_THRESHOLD_SQUARED: i64 = 64;
+const CYCLE_HOTKEY_ID: i32 = 1;
+
+/// The cycle hotkey string currently registered via RegisterHotKey.
+/// Updated by `update_hotkeys` and read by the hook thread.
+static CYCLE_HOTKEY_STR: Lazy<Mutex<String>> = Lazy::new(|| Mutex::new(String::new()));
+
+/// Signal for the hook thread to re-register the cycle hotkey.
+static CYCLE_HOTKEY_DIRTY: AtomicBool = AtomicBool::new(false);
+
+/// The thread ID of the hook thread, used to post wake-up messages.
+static HOOK_THREAD_ID: AtomicU32 = AtomicU32::new(0);
+
+/// Custom message to wake up the hook thread for hotkey re-registration.
+const WM_REFRESH_CYCLE_HOTKEY: u32 = WM_USER + 100;
 
 type SharedBoundWindow = Arc<RwLock<Option<isize>>>;
 
@@ -70,15 +84,30 @@ impl GlobalHooks {
                 if let Ok((_, keyboard, mouse)) = result {
                     // SAFETY: Both hooks and the message queue belong to this thread.
                     unsafe {
+                        // Register the cycle hotkey via RegisterHotKey (more reliable than hook-based detection)
+                        register_cycle_hotkey_on_thread();
+
                         let mut message = MSG::default();
                         loop {
                             let result = GetMessageW(&mut message, None, 0, 0).0;
                             if result <= 0 {
                                 break;
                             }
+                            // Handle WM_HOTKEY for the cycle config hotkey
+                            if message.message == WM_HOTKEY && message.wParam.0 as i32 == CYCLE_HOTKEY_ID {
+                                send_ui_action(UiAction::NextConfig);
+                                continue;
+                            }
+                            // Handle request to re-register the cycle hotkey
+                            if message.message == WM_REFRESH_CYCLE_HOTKEY {
+                                unregister_cycle_hotkey_on_thread();
+                                register_cycle_hotkey_on_thread();
+                                continue;
+                            }
                             let _ = TranslateMessage(&message);
                             DispatchMessageW(&message);
                         }
+                        unregister_cycle_hotkey_on_thread();
                         let _ = UnhookWindowsHookEx(mouse);
                         let _ = UnhookWindowsHookEx(keyboard);
                     }
@@ -104,7 +133,7 @@ impl GlobalHooks {
     }
 
     pub fn update_hotkeys(cycle: &str, profiles: &[(String, String)]) {
-        let cycle = Hotkey::parse(cycle).ok();
+        let cycle_parsed = Hotkey::parse(cycle).ok();
         let profiles = profiles
             .iter()
             .filter_map(|(name, value)| {
@@ -113,7 +142,19 @@ impl GlobalHooks {
                     .map(|hotkey| (name.clone(), hotkey))
             })
             .collect();
-        *BINDINGS.write() = HookBindings { cycle, profiles };
+        *BINDINGS.write() = HookBindings { cycle: cycle_parsed, profiles };
+
+        // Store the cycle hotkey string for RegisterHotKey on the hook thread
+        *CYCLE_HOTKEY_STR.lock() = cycle.to_owned();
+        CYCLE_HOTKEY_DIRTY.store(true, Ordering::Release);
+
+        // Wake up the hook thread to re-register the hotkey
+        let thread_id = HOOK_THREAD_ID.load(Ordering::Acquire);
+        if thread_id != 0 {
+            unsafe {
+                let _ = PostThreadMessageW(thread_id, WM_REFRESH_CYCLE_HOTKEY, WPARAM(0), LPARAM(0));
+            }
+        }
     }
 
     pub fn begin_key_capture() {
@@ -166,6 +207,7 @@ fn install_hooks() -> Result<(u32, HHOOK, HHOOK)> {
     // SAFETY: Both callbacks have the system ABI and remain valid for the hook lifetime.
     unsafe {
         let thread_id = GetCurrentThreadId();
+        HOOK_THREAD_ID.store(thread_id, Ordering::Release);
         let mut message = MSG::default();
         let _ = PeekMessageW(&mut message, None, 0, 0, PM_NOREMOVE);
         let module = GetModuleHandleW(None)?;
@@ -243,6 +285,11 @@ fn handle_keyboard_event(event: &KBDLLHOOKSTRUCT, message: u32) -> bool {
             if handle_registered_hotkey(&pressed) {
                 HOTKEY_FIRED.store(true, Ordering::Relaxed);
                 LEFT_ALT_SOLO.store(false, Ordering::Relaxed);
+                // Suppress all pressed keys so the foreground app doesn't see them
+                let mut suppressed = SUPPRESSED_KEYS.lock();
+                for &vk in PRESSED_KEYS.lock().iter() {
+                    suppressed.insert(vk);
+                }
             }
         }
     } else if is_key_up {
@@ -264,7 +311,7 @@ fn handle_keyboard_event(event: &KBDLLHOOKSTRUCT, message: u32) -> bool {
             }
         }
     }
-    was_suppressed || CAPTURE_MODE.load(Ordering::Acquire) != 0
+    was_suppressed || CAPTURE_MODE.load(Ordering::Acquire) != 0 || SUPPRESSED_KEYS.lock().contains(&raw_vk)
 }
 
 fn handle_registered_hotkey(pressed: &BTreeSet<u16>) -> bool {
@@ -358,4 +405,48 @@ fn send_ui_action(action: UiAction) {
     if let Some(sender) = UI_SENDER.try_lock().and_then(|guard| guard.clone()) {
         let _ = sender.send(action);
     }
+}
+
+/// Register the cycle hotkey using RegisterHotKey on the current thread.
+/// Must be called from the hook thread (which owns the message loop).
+unsafe fn register_cycle_hotkey_on_thread() {
+    let hotkey_str = CYCLE_HOTKEY_STR.lock().clone();
+    if hotkey_str.is_empty() {
+        return;
+    }
+    let Ok(hotkey) = Hotkey::parse(&hotkey_str) else {
+        return;
+    };
+
+    let mut mod_flags: u32 = 0;
+    let mut vk_code: u32 = 0;
+    for &key in &hotkey.keys {
+        match key {
+            VK_CONTROL => mod_flags |= 0x0002, // MOD_CONTROL
+            VK_ALT => mod_flags |= 0x0001,     // MOD_ALT
+            VK_SHIFT => mod_flags |= 0x0004,   // MOD_SHIFT
+            VK_WIN => mod_flags |= 0x0008,     // MOD_WIN
+            k => vk_code = k as u32,
+        }
+    }
+    if vk_code == 0 {
+        return;
+    }
+    // MOD_NOREPEAT = 0x4000 — prevents repeated WM_HOTKEY when key is held
+    mod_flags |= 0x4000;
+
+    #[link(name = "user32")]
+    extern "system" {
+        fn RegisterHotKey(hwnd: isize, id: i32, fsModifiers: u32, vk: u32) -> i32;
+    }
+    RegisterHotKey(0, CYCLE_HOTKEY_ID, mod_flags, vk_code);
+}
+
+/// Unregister the cycle hotkey. Must be called from the hook thread.
+unsafe fn unregister_cycle_hotkey_on_thread() {
+    #[link(name = "user32")]
+    extern "system" {
+        fn UnregisterHotKey(hwnd: isize, id: i32) -> i32;
+    }
+    UnregisterHotKey(0, CYCLE_HOTKEY_ID);
 }

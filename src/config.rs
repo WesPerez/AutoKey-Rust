@@ -92,6 +92,8 @@ pub struct AppPreferences {
     pub selected_config: String,
     #[serde(alias = "CycleConfigHotkey")]
     pub cycle_config_hotkey: String,
+    pub window_x: f32,
+    pub window_y: f32,
     pub window_width: f32,
     pub window_height: f32,
 }
@@ -101,6 +103,8 @@ impl Default for AppPreferences {
         Self {
             selected_config: DEFAULT_CONFIG_NAME.to_owned(),
             cycle_config_hotkey: DEFAULT_CYCLE_HOTKEY.to_owned(),
+            window_x: f32::NAN,
+            window_y: f32::NAN,
             window_width: 1040.0,
             window_height: 700.0,
         }
@@ -113,6 +117,12 @@ impl AppPreferences {
         self.cycle_config_hotkey = self.cycle_config_hotkey.trim().chars().take(64).collect();
         if self.cycle_config_hotkey.is_empty() {
             self.cycle_config_hotkey = DEFAULT_CYCLE_HOTKEY.to_owned();
+        }
+        if !self.window_x.is_finite() {
+            self.window_x = f32::NAN;
+        }
+        if !self.window_y.is_finite() {
+            self.window_y = f32::NAN;
         }
         if !self.window_width.is_finite() {
             self.window_width = 1040.0;

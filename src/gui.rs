@@ -6,7 +6,7 @@ use crate::config::{
 use crate::hook::GlobalHooks;
 use crate::hotkey::key_display_name;
 use crate::single_instance::SingleInstance;
-use crate::tray::{TrayAction, TrayController};
+use crate::tray::TrayController;
 use crate::window::{enumerate_windows, get_window_title, is_window_valid, WindowInfo};
 use crate::{AppCommand, UiAction};
 use eframe::egui;
@@ -17,6 +17,9 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
+use windows::Win32::Foundation::*;
+use windows::Win32::Graphics::Gdi::*;
+use windows::Win32::UI::WindowsAndMessaging::*;
 
 const AUTOSAVE_INTERVAL: Duration = Duration::from_millis(750);
 
@@ -29,12 +32,18 @@ const CHINESE_FONT_CANDIDATES: &[&str] = &[
     r"C:\Windows\Fonts\simsun.ttc",
 ];
 
-/// Create a window icon that changes color based on running state.
-/// Sky blue background with green (running) or red (stopped) center circle.
-fn create_window_icon(is_running: bool) -> egui::IconData {
+// Sky blue color constants
+const SKY_BLUE_PRIMARY: egui::Color32 = egui::Color32::from_rgb(30, 136, 229);   // #1E88E5
+const SKY_BLUE_DARK: egui::Color32 = egui::Color32::from_rgb(21, 101, 192);      // #1565C0
+const SKY_BLUE_LIGHT: egui::Color32 = egui::Color32::from_rgb(227, 242, 253);    // #E3F2FD
+const SKY_BLUE_VERY_LIGHT: egui::Color32 = egui::Color32::from_rgb(240, 248, 255); // #F0F8FF
+const SKY_BLUE_BG: egui::Color32 = egui::Color32::from_rgb(232, 245, 253);       // #E8F5FD
+
+/// Generate RGBA icon data. Sky blue background with green (running) or red (stopped) center.
+fn create_icon_rgba(is_running: bool) -> Vec<u8> {
     const SIZE: usize = 32;
     let mut rgba = vec![0u8; SIZE * SIZE * 4];
-    let bg_color: [u8; 4] = [21, 101, 192, 255];
+    let bg_color: [u8; 4] = [30, 136, 229, 255]; // sky blue
     let accent: [u8; 4] = if is_running {
         [76, 175, 80, 255]   // green when running
     } else {
@@ -75,10 +84,131 @@ fn create_window_icon(is_running: bool) -> egui::IconData {
         }
     }
 
+    rgba
+}
+
+fn create_window_icon(is_running: bool) -> egui::IconData {
+    const SIZE: usize = 32;
+    let rgba = create_icon_rgba(is_running);
     egui::IconData {
         width: SIZE as u32,
         height: SIZE as u32,
         rgba,
+    }
+}
+
+/// Create a Windows HICON from RGBA data for the taskbar icon.
+fn create_hicon(is_running: bool) -> Option<isize> {
+    const SIZE: u32 = 32;
+    let rgba = create_icon_rgba(is_running);
+
+    unsafe {
+        let hdc = GetDC(None);
+        if hdc.is_invalid() {
+            return None;
+        }
+
+        let mut bmi: BITMAPINFO = std::mem::zeroed();
+        bmi.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
+        bmi.bmiHeader.biWidth = SIZE as i32;
+        bmi.bmiHeader.biHeight = -(SIZE as i32); // top-down DIB
+        bmi.bmiHeader.biPlanes = 1;
+        bmi.bmiHeader.biBitCount = 32;
+        bmi.bmiHeader.biCompression = 0; // BI_RGB
+
+        let mut ppv_bits: *mut std::ffi::c_void = std::ptr::null_mut();
+        let h_color = match CreateDIBSection(
+            hdc,
+            &bmi,
+            DIB_RGB_COLORS,
+            &mut ppv_bits,
+            None,
+            0,
+        ) {
+            Ok(h) => h,
+            Err(_) => {
+                let _ = ReleaseDC(None, hdc);
+                return None;
+            }
+        };
+        let _ = ReleaseDC(None, hdc);
+
+        if ppv_bits.is_null() {
+            let _ = DeleteObject(h_color);
+            return None;
+        }
+
+        // Copy RGBA with pre-multiplied alpha and BGRA byte order
+        let bits = ppv_bits as *mut u8;
+        for i in 0..(SIZE * SIZE) as usize {
+            let r = rgba[i * 4];
+            let g = rgba[i * 4 + 1];
+            let b = rgba[i * 4 + 2];
+            let a = rgba[i * 4 + 3];
+            *bits.add(i * 4) = (b as u16 * a as u16 / 255) as u8;
+            *bits.add(i * 4 + 1) = (g as u16 * a as u16 / 255) as u8;
+            *bits.add(i * 4 + 2) = (r as u16 * a as u16 / 255) as u8;
+            *bits.add(i * 4 + 3) = a;
+        }
+
+        // Create mask bitmap (1bpp, all zeros = fully opaque)
+        let mask_row_bytes = ((SIZE + 31) / 32 * 4) as usize;
+        let mask_data = vec![0u8; mask_row_bytes * SIZE as usize];
+        let h_mask = CreateBitmap(
+            SIZE as i32,
+            SIZE as i32,
+            1,
+            1,
+            Some(mask_data.as_ptr() as *const _),
+        );
+
+        let icon_info = ICONINFO {
+            fIcon: TRUE,
+            xHotspot: 0,
+            yHotspot: 0,
+            hbmMask: h_mask,
+            hbmColor: h_color,
+        };
+
+        let hicon = match CreateIconIndirect(&icon_info) {
+            Ok(h) => h,
+            Err(_) => {
+                let _ = DeleteObject(h_color);
+                let _ = DeleteObject(h_mask);
+                return None;
+            }
+        };
+
+        let _ = DeleteObject(h_color);
+        let _ = DeleteObject(h_mask);
+
+        if hicon.is_invalid() {
+            None
+        } else {
+            Some(hicon.0 as isize)
+        }
+    }
+}
+
+/// Update the taskbar icon by sending WM_SETICON to the main window.
+fn update_taskbar_icon(is_running: bool, old_hicon: &mut Option<isize>) {
+    let Some(hicon) = create_hicon(is_running) else {
+        return;
+    };
+
+    // Destroy old icon if any
+    if let Some(old) = old_hicon.take() {
+        unsafe { let _ = DestroyIcon(HICON(old as *mut _)); }
+    }
+    *old_hicon = Some(hicon);
+
+    // Find the main window and set the icon
+    if let Some(hwnd) = crate::window::find_own_hwnd() {
+        unsafe {
+            let hwnd = HWND(hwnd as *mut _);
+            let _ = SendMessageW(hwnd, WM_SETICON, WPARAM(0), LPARAM(hicon)); // ICON_SMALL
+            let _ = SendMessageW(hwnd, WM_SETICON, WPARAM(1), LPARAM(hicon)); // ICON_BIG
+        }
     }
 }
 
@@ -109,45 +239,44 @@ fn install_chinese_font_fallback(ctx: &egui::Context) {
     ctx.set_fonts(fonts);
 }
 
-/// Configure a light blue (sky blue) visual theme matching the original C# version.
+/// Configure a sky blue visual theme matching the original C# version.
 fn setup_visuals(ctx: &egui::Context) {
     let mut visuals = egui::Visuals::light();
 
-    // Sky blue accent palette inspired by the original C# version (#1565C0 primary)
     visuals.override_text_color = Some(egui::Color32::from_rgb(51, 51, 51));
 
-    visuals.widgets.noninteractive.bg_fill = egui::Color32::from_rgb(240, 243, 248);
-    visuals.widgets.noninteractive.weak_bg_fill = egui::Color32::from_rgb(245, 247, 250);
-    visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(170, 175, 185));
+    visuals.widgets.noninteractive.bg_fill = SKY_BLUE_VERY_LIGHT;
+    visuals.widgets.noninteractive.weak_bg_fill = SKY_BLUE_VERY_LIGHT;
+    visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(170, 195, 220));
 
     visuals.widgets.inactive.bg_fill = egui::Color32::WHITE;
-    visuals.widgets.inactive.weak_bg_fill = egui::Color32::from_rgb(248, 249, 252);
-    visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(80, 80, 80));
+    visuals.widgets.inactive.weak_bg_fill = SKY_BLUE_LIGHT;
+    visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(60, 60, 60));
     visuals.widgets.inactive.rounding = egui::Rounding::same(4.0);
 
-    visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(232, 238, 248);
-    visuals.widgets.hovered.weak_bg_fill = egui::Color32::from_rgb(228, 235, 246);
-    visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(21, 101, 192));
+    visuals.widgets.hovered.bg_fill = SKY_BLUE_LIGHT;
+    visuals.widgets.hovered.weak_bg_fill = SKY_BLUE_LIGHT;
+    visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.0, SKY_BLUE_PRIMARY);
     visuals.widgets.hovered.rounding = egui::Rounding::same(4.0);
 
-    visuals.widgets.active.bg_fill = egui::Color32::from_rgb(21, 101, 192);
-    visuals.widgets.active.weak_bg_fill = egui::Color32::from_rgb(21, 101, 192);
+    visuals.widgets.active.bg_fill = SKY_BLUE_PRIMARY;
+    visuals.widgets.active.weak_bg_fill = SKY_BLUE_PRIMARY;
     visuals.widgets.active.fg_stroke = egui::Stroke::new(1.0, egui::Color32::WHITE);
     visuals.widgets.active.rounding = egui::Rounding::same(4.0);
 
-    visuals.selection.bg_fill = egui::Color32::from_rgb(21, 101, 192);
-    visuals.selection.stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(21, 101, 192));
+    visuals.selection.bg_fill = SKY_BLUE_PRIMARY;
+    visuals.selection.stroke = egui::Stroke::new(1.0, SKY_BLUE_PRIMARY);
 
-    visuals.panel_fill = egui::Color32::from_rgb(240, 243, 248);
+    visuals.panel_fill = SKY_BLUE_VERY_LIGHT;
     visuals.window_fill = egui::Color32::WHITE;
-    visuals.faint_bg_color = egui::Color32::from_rgb(235, 238, 244);
+    visuals.faint_bg_color = SKY_BLUE_BG;
 
     ctx.set_visuals(visuals);
 
     let mut style = (*ctx.style()).clone();
-    style.spacing.item_spacing = egui::vec2(8.0, 5.0);
-    style.spacing.button_padding = egui::vec2(10.0, 5.0);
-    style.spacing.interact_size = egui::vec2(36.0, 22.0);
+    style.spacing.item_spacing = egui::vec2(8.0, 6.0);
+    style.spacing.button_padding = egui::vec2(10.0, 6.0);
+    style.spacing.interact_size = egui::vec2(40.0, 26.0);
     ctx.set_style(style);
 }
 
@@ -191,6 +320,70 @@ impl Drop for ActivationWake {
     }
 }
 
+/// Background thread that directly polls tray events.
+/// This works even when the egui window is hidden and its event loop is paused.
+/// When the user clicks "Exit" or "Show" from the tray, this thread takes action immediately.
+struct TrayPollWake {
+    stop: Arc<AtomicBool>,
+    worker: Option<JoinHandle<()>>,
+}
+
+impl TrayPollWake {
+    fn spawn(egui_ctx: egui::Context) -> Self {
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker_stop = stop.clone();
+        let worker = thread::Builder::new()
+            .name(crate::obfuscate::random_thread_name())
+            .spawn(move || {
+                use tray_icon::menu::{MenuEvent, MenuId};
+                use tray_icon::TrayIconEvent;
+
+                // We need the menu IDs to identify which item was clicked.
+                // These are set by TrayController after creation.
+                // We'll poll all events and match by known patterns.
+                let show_id: MenuId = MenuId::new("show");
+                let exit_id: MenuId = MenuId::new("exit");
+                let autostart_id: MenuId = MenuId::new("autostart");
+
+                while !worker_stop.load(Ordering::Acquire) {
+                    thread::sleep(Duration::from_millis(80));
+
+                    // Poll tray icon events (double-click to show)
+                    while let Ok(event) = TrayIconEvent::receiver().try_recv() {
+                        if matches!(event, TrayIconEvent::DoubleClick { .. }) {
+                            crate::window::restore_own_main_window();
+                            egui_ctx.request_repaint();
+                        }
+                    }
+
+                    // Poll menu events
+                    while let Ok(event) = MenuEvent::receiver().try_recv() {
+                        if event.id == exit_id {
+                            std::process::exit(0);
+                        } else if event.id == show_id {
+                            crate::window::restore_own_main_window();
+                            egui_ctx.request_repaint();
+                        }
+                        // autostart is handled by the egui update loop's tray.poll()
+                        // since it needs the CheckMenuItem reference.
+                        // We just skip it here.
+                    }
+                }
+            })
+            .ok();
+        Self { stop, worker }
+    }
+}
+
+impl Drop for TrayPollWake {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
 pub struct AutoKeyApp {
     config: Arc<RwLock<Config>>,
     preferences: Arc<RwLock<AppPreferences>>,
@@ -209,13 +402,14 @@ pub struct AutoKeyApp {
     capturing_key: Option<usize>,
     capturing_hotkey: Option<HotkeyCaptureTarget>,
     tray: Option<TrayController>,
-    really_closing: bool,
-    hide_requested: bool,
     was_running: bool,
     was_alt_held: bool,
     last_saved_config: Config,
     last_saved_preferences: AppPreferences,
     last_autosave: Instant,
+    last_config_switch: Instant,
+    taskbar_hicon: Option<isize>,
+    _tray_poll_wake: TrayPollWake,
 }
 
 impl AutoKeyApp {
@@ -251,6 +445,8 @@ impl AutoKeyApp {
             }
         };
 
+        let tray_poll_wake = TrayPollWake::spawn(egui_context.clone());
+
         let mut app = Self {
             config,
             preferences,
@@ -269,13 +465,14 @@ impl AutoKeyApp {
             capturing_key: None,
             capturing_hotkey: None,
             tray,
-            really_closing: false,
-            hide_requested: false,
             was_running: false,
             was_alt_held: false,
             last_saved_config,
             last_saved_preferences,
             last_autosave: Instant::now(),
+            last_config_switch: Instant::now() - Duration::from_secs(10),
+            taskbar_hicon: None,
+            _tray_poll_wake: tray_poll_wake,
         };
         app.refresh_profiles_and_hotkeys();
         app
@@ -298,6 +495,30 @@ impl AutoKeyApp {
             })
             .collect();
         GlobalHooks::update_hotkeys(&cycle, &profile_hotkeys);
+    }
+
+    fn switch_to_next_config(&mut self) {
+        if self.last_config_switch.elapsed() < Duration::from_millis(300) {
+            return; // debounce
+        }
+        self.last_config_switch = Instant::now();
+
+        if let Some(pos) = self
+            .profile_names
+            .iter()
+            .position(|n| *n == self.preferences.read().selected_config)
+        {
+            let next = (pos + 1) % self.profile_names.len();
+            let name = self.profile_names[next].clone();
+            if let Err(error) = load_into(&name, &self.config) {
+                *self.status.write() = format!("切换配置失败: {error}");
+            } else {
+                self.preferences.write().selected_config = name.clone();
+                self.profile_name_edit = name.clone();
+                *self.status.write() = format!("已切换到配置 [{name}]");
+                self.refresh_profiles_and_hotkeys();
+            }
+        }
     }
 
     fn autosave_if_changed(&mut self) {
@@ -326,17 +547,23 @@ impl AutoKeyApp {
         }
     }
 
-    fn persist_window_size(&mut self, ctx: &egui::Context) {
-        let Some(rect) = ctx.input(|input| input.viewport().inner_rect) else {
+    fn persist_window_state(&mut self, ctx: &egui::Context) {
+        let Some(rect) = ctx.input(|input| input.viewport().outer_rect) else {
             return;
         };
+        let pos = rect.min;
         let size = rect.size();
-        if !size.x.is_finite() || !size.y.is_finite() || size.x <= 0.0 || size.y <= 0.0 {
+        if !pos.x.is_finite() || !pos.y.is_finite() || !size.x.is_finite() || !size.y.is_finite() {
+            return;
+        }
+        if size.x <= 0.0 || size.y <= 0.0 {
             return;
         }
 
         let preferences = {
             let mut preferences = self.preferences.write();
+            preferences.window_x = pos.x;
+            preferences.window_y = pos.y;
             preferences.window_width = size.x;
             preferences.window_height = size.y;
             preferences.sanitize();
@@ -344,8 +571,8 @@ impl AutoKeyApp {
         };
 
         if let Err(error) = crate::config::save_preferences(&preferences) {
-            crate::logging::log_error("save_window_size", &error);
-            *self.status.write() = format!("保存窗口尺寸失败: {error}");
+            crate::logging::log_error("save_window_state", &error);
+            *self.status.write() = format!("保存窗口状态失败: {error}");
         } else {
             self.last_saved_preferences = preferences;
         }
@@ -355,23 +582,7 @@ impl AutoKeyApp {
         while let Ok(action) = self.ui_rx.try_recv() {
             match action {
                 UiAction::NextConfig => {
-                    if let Some(pos) = self
-                        .profile_names
-                        .iter()
-                        .position(|n| *n == self.preferences.read().selected_config)
-                    {
-                        let next = (pos + 1) % self.profile_names.len();
-                        let name = self.profile_names[next].clone();
-                        if let Err(error) = load_into(&name, &self.config) {
-                            *self.status.write() = format!(
-                                "\u{5207}\u{6362}\u{914d}\u{7f6e}\u{5931}\u{8d25}: {error}"
-                            );
-                        } else {
-                            self.preferences.write().selected_config = name.clone();
-                            self.profile_name_edit = name;
-                            self.refresh_profiles_and_hotkeys();
-                        }
-                    }
+                    self.switch_to_next_config();
                 }
                 UiAction::LoadConfig(name) => {
                     if let Err(error) = load_into(&name, &self.config) {
@@ -419,15 +630,15 @@ impl AutoKeyApp {
     fn render_header(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("header")
             .exact_height(52.0)
-            .frame(egui::Frame::none().fill(egui::Color32::WHITE).inner_margin(egui::Margin::symmetric(12.0, 6.0)))
+            .frame(egui::Frame::none().fill(SKY_BLUE_PRIMARY).inner_margin(egui::Margin::symmetric(12.0, 6.0)))
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.vertical(|ui| {
-                        ui.label(egui::RichText::new(obfstr!("调度器")).size(18.0).strong().color(egui::Color32::from_rgb(21, 101, 192)));
+                        ui.label(egui::RichText::new(obfstr!("调度器")).size(18.0).strong().color(egui::Color32::WHITE));
                         ui.label(
                             egui::RichText::new("Windows 按键调度器")
                                 .size(10.0)
-                                .color(egui::Color32::from_rgb(136, 136, 136)),
+                                .color(egui::Color32::from_rgba_premultiplied(255, 255, 255, 180)),
                         );
                     });
 
@@ -479,11 +690,7 @@ impl AutoKeyApp {
                                     "已停止"
                                 })
                                 .size(12.0)
-                                .color(if running {
-                                    egui::Color32::from_rgb(76, 175, 80)
-                                } else {
-                                    egui::Color32::from_rgb(136, 136, 136)
-                                }),
+                                .color(egui::Color32::from_rgba_premultiplied(255, 255, 255, 200)),
                             );
                         },
                     );
@@ -495,24 +702,24 @@ impl AutoKeyApp {
         egui::SidePanel::left("settings")
             .resizable(false)
             .exact_width(280.0)
-            .frame(egui::Frame::none().fill(egui::Color32::WHITE).inner_margin(egui::Margin::same(10.0)))
+            .frame(egui::Frame::none().fill(SKY_BLUE_LIGHT).inner_margin(egui::Margin::same(10.0)))
             .show(ctx, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| {
-                    ui.label(egui::RichText::new("运行设置").size(13.0).strong().color(egui::Color32::from_rgb(21, 101, 192)));
+                    ui.label(egui::RichText::new("运行设置").size(13.0).strong().color(SKY_BLUE_DARK));
                     ui.add_space(4.0);
                     self.render_run_settings(ui);
 
                     ui.add_space(8.0);
                     ui.separator();
                     ui.add_space(6.0);
-                    ui.label(egui::RichText::new("发送目标").size(13.0).strong().color(egui::Color32::from_rgb(21, 101, 192)));
+                    ui.label(egui::RichText::new("发送目标").size(13.0).strong().color(SKY_BLUE_DARK));
                     ui.add_space(4.0);
                     self.render_target_settings(ui);
 
                     ui.add_space(8.0);
                     ui.separator();
                     ui.add_space(6.0);
-                    ui.label(egui::RichText::new("配置档").size(13.0).strong().color(egui::Color32::from_rgb(21, 101, 192)));
+                    ui.label(egui::RichText::new("配置档").size(13.0).strong().color(SKY_BLUE_DARK));
                     ui.add_space(4.0);
                     self.render_profile_settings(ui);
                 });
@@ -774,7 +981,7 @@ impl AutoKeyApp {
 
     fn render_key_table(&mut self, ctx: &egui::Context) {
         egui::CentralPanel::default()
-            .frame(egui::Frame::none().fill(egui::Color32::from_rgb(240, 243, 248)).inner_margin(egui::Margin::same(8.0)))
+            .frame(egui::Frame::none().fill(SKY_BLUE_VERY_LIGHT).inner_margin(egui::Margin::same(10.0)))
             .show(ctx, |ui| {
                 ui.vertical(|ui| {
                     ui.horizontal(|ui| {
@@ -789,21 +996,21 @@ impl AutoKeyApp {
                             }
                         }
                     });
-                    ui.add_space(4.0);
+                    ui.add_space(6.0);
 
                     // Use Grid for proper column alignment and full-width rows
                     egui::Grid::new("key_table")
                         .striped(true)
-                        .spacing(egui::vec2(8.0, 4.0))
-                        .min_col_width(40.0)
+                        .spacing(egui::vec2(12.0, 8.0))
+                        .min_col_width(60.0)
                         .show(ui, |ui| {
                             // Header row
-                            ui.label(egui::RichText::new("#").strong().color(egui::Color32::from_rgb(85, 85, 85)));
-                            ui.label(egui::RichText::new("按键").strong().color(egui::Color32::from_rgb(85, 85, 85)));
-                            ui.label(egui::RichText::new("基础延迟(ms)").strong().color(egui::Color32::from_rgb(85, 85, 85)));
-                            ui.label(egui::RichText::new("随机范围(ms)").strong().color(egui::Color32::from_rgb(85, 85, 85)));
-                            ui.label(egui::RichText::new("启用").strong().color(egui::Color32::from_rgb(85, 85, 85)));
-                            ui.label(egui::RichText::new("状态").strong().color(egui::Color32::from_rgb(85, 85, 85)));
+                            ui.label(egui::RichText::new("#").strong().size(13.0).color(SKY_BLUE_DARK));
+                            ui.label(egui::RichText::new("按键").strong().size(13.0).color(SKY_BLUE_DARK));
+                            ui.label(egui::RichText::new("基础延迟(ms)").strong().size(13.0).color(SKY_BLUE_DARK));
+                            ui.label(egui::RichText::new("随机范围(ms)").strong().size(13.0).color(SKY_BLUE_DARK));
+                            ui.label(egui::RichText::new("启用").strong().size(13.0).color(SKY_BLUE_DARK));
+                            ui.label(egui::RichText::new("状态").strong().size(13.0).color(SKY_BLUE_DARK));
                             ui.end_row();
 
                             #[derive(Default)]
@@ -824,7 +1031,7 @@ impl AutoKeyApp {
                                     let is_capturing = self.capturing_key == Some(index);
                                     let is_active = key_running.get(index).copied().unwrap_or(false);
 
-                                    ui.label(egui::RichText::new(format!("{}", index + 1)).color(egui::Color32::from_rgb(136, 136, 136)));
+                                    ui.label(egui::RichText::new(format!("{}", index + 1)).size(13.0).color(egui::Color32::from_rgb(100, 100, 100)));
 
                                     let button_text = if is_capturing {
                                         "按任意键..."
@@ -832,7 +1039,9 @@ impl AutoKeyApp {
                                         &key.key_name
                                     };
                                     let button =
-                                        egui::Button::new(button_text).min_size(egui::vec2(90.0, 22.0)).rounding(egui::Rounding::same(3.0));
+                                        egui::Button::new(egui::RichText::new(button_text).size(13.0))
+                                            .min_size(egui::vec2(100.0, 28.0))
+                                            .rounding(egui::Rounding::same(3.0));
                                     if ui.add(button).clicked() {
                                         if is_capturing {
                                             self.capturing_key = None;
@@ -844,7 +1053,7 @@ impl AutoKeyApp {
                                     }
 
                                     let mut base_delay = key.base_delay;
-                                    ui.add(
+                                    ui.add_sized([90.0, 28.0],
                                         egui::DragValue::new(&mut base_delay)
                                             .range(MIN_DELAY_MS..=MAX_DELAY_MS)
                                             .speed(10),
@@ -854,7 +1063,7 @@ impl AutoKeyApp {
                                     }
 
                                     let mut random_range = key.random_range;
-                                    ui.add(
+                                    ui.add_sized([90.0, 28.0],
                                         egui::DragValue::new(&mut random_range)
                                             .range(0..=MAX_DELAY_MS)
                                             .speed(10),
@@ -871,12 +1080,12 @@ impl AutoKeyApp {
 
                                     if is_active {
                                         ui.label(
-                                            egui::RichText::new("\u{25cf}")
+                                            egui::RichText::new("\u{25cf}").size(14.0)
                                                 .color(egui::Color32::from_rgb(76, 175, 80)),
                                         );
                                     } else {
                                         ui.label(
-                                            egui::RichText::new("\u{25cb}")
+                                            egui::RichText::new("\u{25cb}").size(14.0)
                                                 .color(egui::Color32::from_rgb(189, 189, 189)),
                                         );
                                     }
@@ -911,11 +1120,11 @@ impl AutoKeyApp {
     fn render_status_bar(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::bottom("status_bar")
             .exact_height(24.0)
-            .frame(egui::Frame::none().fill(egui::Color32::from_rgb(235, 238, 244)).inner_margin(egui::Margin::symmetric(10.0, 3.0)))
+            .frame(egui::Frame::none().fill(SKY_BLUE_LIGHT).inner_margin(egui::Margin::symmetric(10.0, 3.0)))
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     let status = self.status.read().clone();
-                    ui.label(egui::RichText::new(status).size(11.0).color(egui::Color32::from_rgb(119, 119, 119)));
+                    ui.label(egui::RichText::new(status).size(11.0).color(egui::Color32::from_rgb(80, 120, 160)));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if !self.hooks_available {
                             ui.colored_label(
@@ -934,34 +1143,40 @@ impl eframe::App for AutoKeyApp {
         setup_visuals(ctx);
 
         // Detect left Alt key press via egui input as a fallback.
-        // The global hook may miss Alt events when the eframe window has focus
-        // because Windows consumes Alt for menu activation.
-        // We detect Alt by checking if the Alt modifier is newly pressed this frame.
         {
-            // Simpler approach: check if Alt modifier is held and no other key
             let alt_mod = ctx.input(|i| i.modifiers.alt);
             let alt_only = ctx.input(|i| i.modifiers.alt && !i.modifiers.ctrl && !i.modifiers.shift && !i.modifiers.command);
-            // Track state to detect press (not hold)
             if alt_only && !self.was_alt_held {
                 let _ = self.command_tx.send(AppCommand::ToggleRunning);
             }
             self.was_alt_held = alt_mod;
         }
 
+        // Detect Ctrl+Z via egui raw events (key_pressed may be consumed by undo)
+        // The global hook handles Ctrl+Z when the window is unfocused.
+        // When the window has focus, the hook suppresses the keys so egui won't see them,
+        // but the hook sends UiAction::NextConfig through the channel.
+        // This egui fallback is for cases where the hook doesn't suppress (e.g. if the
+        // cycle hotkey was changed to something else and then back).
+        {
+            let ctrl_z = ctx.input(|i| {
+                i.events.iter().any(|e| {
+                    matches!(e, egui::Event::Key { key: egui::Key::Z, pressed: true, modifiers, .. }
+                        if modifiers.ctrl && !modifiers.alt && !modifiers.shift && !modifiers.command)
+                })
+            });
+            if ctrl_z {
+                self.switch_to_next_config();
+            }
+        }
+
         self.process_ui_actions();
 
+        // Poll tray events for autostart toggle only.
+        // Show/Exit events are handled by the TrayPollWake background thread,
+        // which works even when the window is hidden.
         if let Some(tray) = &self.tray {
-            match tray.poll() {
-                TrayAction::Show => {
-                    crate::window::restore_own_main_window();
-                }
-                TrayAction::Exit => {
-                    self.really_closing = true;
-                    let _ = self.command_tx.send(AppCommand::Exit);
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                }
-                TrayAction::None => {}
-            }
+            let _ = tray.poll(); // handles autostart toggle
         }
 
         if let Some(tray) = &mut self.tray {
@@ -970,30 +1185,36 @@ impl eframe::App for AutoKeyApp {
             tray.update(running, &name);
         }
 
-        // Update window icon based on running state
+        // Update window icon and taskbar icon based on running state
         {
             let running = self.is_running.load(Ordering::Acquire);
             if running != self.was_running {
                 self.was_running = running;
                 let icon = create_window_icon(running);
                 ctx.send_viewport_cmd(egui::ViewportCommand::Icon(Some(Arc::new(icon))));
+                // Update taskbar icon via Windows API
+                update_taskbar_icon(running, &mut self.taskbar_hicon);
             }
         }
 
         self.autosave_if_changed();
 
+        // Clicking X → minimize to tray (not exit)
         if ctx.input(|i| i.viewport().close_requested()) {
-            self.persist_window_size(ctx);
-            if self.tray.is_some() && !self.really_closing {
-                self.hide_requested = true;
+            if self.tray.is_some() {
+                // Cancel the close and hide the window instead
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                self.persist_window_state(ctx);
+                ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            } else {
+                // No tray → actually exit
+                self.persist_window_state(ctx);
+                if let Some(hicon) = self.taskbar_hicon.take() {
+                    unsafe { let _ = DestroyIcon(HICON(hicon as *mut _)); }
+                }
+                std::process::exit(0);
             }
-        }
-
-        if self.hide_requested {
-            self.hide_requested = false;
-            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
         }
 
         self.render_header(ctx);
@@ -1001,9 +1222,9 @@ impl eframe::App for AutoKeyApp {
         self.render_key_table(ctx);
         self.render_status_bar(ctx);
 
-        if self.is_running.load(Ordering::Acquire) {
-            ctx.request_repaint_after(Duration::from_millis(100));
-        }
+        // Always request periodic repaints so tray events are processed
+        // even when the window is hidden/minimized
+        ctx.request_repaint_after(Duration::from_millis(200));
     }
 }
 
@@ -1021,18 +1242,25 @@ pub fn run_gui(
     hooks_available: bool,
 ) -> Result<(), eframe::Error> {
     let title = format!("{} - {}", obfstr!("调度器"), preferences.read().selected_config);
-    let (width, height) = {
+    let (width, height, pos_x, pos_y) = {
         let prefs = preferences.read();
-        (prefs.window_width, prefs.window_height)
+        (prefs.window_width, prefs.window_height, prefs.window_x, prefs.window_y)
     };
 
     let icon = Arc::new(create_window_icon(false));
 
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_inner_size([width, height])
+        .with_title(title)
+        .with_icon(icon);
+
+    // Restore window position if previously saved
+    if pos_x.is_finite() && pos_y.is_finite() {
+        viewport = viewport.with_position([pos_x, pos_y]);
+    }
+
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([width, height])
-            .with_title(title)
-            .with_icon(icon),
+        viewport,
         ..Default::default()
     };
 
