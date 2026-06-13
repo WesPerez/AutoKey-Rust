@@ -29,6 +29,59 @@ const CHINESE_FONT_CANDIDATES: &[&str] = &[
     r"C:\Windows\Fonts\simsun.ttc",
 ];
 
+/// Create a window icon that changes color based on running state.
+/// Sky blue background with green (running) or red (stopped) center circle.
+fn create_window_icon(is_running: bool) -> egui::IconData {
+    const SIZE: usize = 32;
+    let mut rgba = vec![0u8; SIZE * SIZE * 4];
+    let bg_color: [u8; 4] = [21, 101, 192, 255];
+    let accent: [u8; 4] = if is_running {
+        [76, 175, 80, 255]   // green when running
+    } else {
+        [211, 47, 47, 255]   // red when stopped
+    };
+    let white: [u8; 4] = [255, 255, 255, 255];
+
+    for y in 0..SIZE {
+        for x in 0..SIZE {
+            let offset = (y * SIZE + x) * 4;
+            let dx = x as f32 - 15.5;
+            let dy = y as f32 - 15.5;
+            let distance = (dx * dx + dy * dy).sqrt();
+            let color = if distance <= 14.0 {
+                bg_color
+            } else if distance <= 15.5 {
+                let alpha = ((15.5 - distance) / 1.5 * 255.0) as u8;
+                [bg_color[0], bg_color[1], bg_color[2], alpha]
+            } else {
+                [0, 0, 0, 0]
+            };
+            rgba[offset..offset + 4].copy_from_slice(&color);
+        }
+    }
+    for y in 0..SIZE {
+        for x in 0..SIZE {
+            let offset = (y * SIZE + x) * 4;
+            let dx = x as f32 - 15.5;
+            let dy = y as f32 - 15.5;
+            let distance = (dx * dx + dy * dy).sqrt();
+            if distance <= 8.0 {
+                rgba[offset..offset + 4].copy_from_slice(&accent);
+            } else if distance <= 9.5 {
+                let alpha = ((9.5 - distance) / 1.5 * 255.0) as u8;
+                let blended = [white[0], white[1], white[2], alpha.min(rgba[offset + 3])];
+                rgba[offset..offset + 4].copy_from_slice(&blended);
+            }
+        }
+    }
+
+    egui::IconData {
+        width: SIZE as u32,
+        height: SIZE as u32,
+        rgba,
+    }
+}
+
 fn install_chinese_font_fallback(ctx: &egui::Context) {
     let Some(bytes) = CHINESE_FONT_CANDIDATES
         .iter()
@@ -158,6 +211,8 @@ pub struct AutoKeyApp {
     tray: Option<TrayController>,
     really_closing: bool,
     hide_requested: bool,
+    was_running: bool,
+    was_alt_held: bool,
     last_saved_config: Config,
     last_saved_preferences: AppPreferences,
     last_autosave: Instant,
@@ -216,6 +271,8 @@ impl AutoKeyApp {
             tray,
             really_closing: false,
             hide_requested: false,
+            was_running: false,
+            was_alt_held: false,
             last_saved_config,
             last_saved_preferences,
             last_autosave: Instant::now(),
@@ -719,7 +776,7 @@ impl AutoKeyApp {
         egui::CentralPanel::default()
             .frame(egui::Frame::none().fill(egui::Color32::from_rgb(240, 243, 248)).inner_margin(egui::Margin::same(8.0)))
             .show(ctx, |ui| {
-                egui::ScrollArea::vertical().show(ui, |ui| {
+                ui.vertical(|ui| {
                     ui.horizontal(|ui| {
                         if ui.button("全选").clicked() {
                             for key in &mut self.config.write().keys {
@@ -734,141 +791,119 @@ impl AutoKeyApp {
                     });
                     ui.add_space(4.0);
 
-                    // Table header
-                    egui::Frame::none()
-                        .fill(egui::Color32::from_rgb(245, 245, 245))
-                        .rounding(egui::Rounding::same(3.0))
+                    // Use Grid for proper column alignment and full-width rows
+                    egui::Grid::new("key_table")
+                        .striped(true)
+                        .spacing(egui::vec2(8.0, 4.0))
+                        .min_col_width(40.0)
                         .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.label(egui::RichText::new("#").strong().color(egui::Color32::from_rgb(85, 85, 85)));
-                                ui.add_space(8.0);
-                                ui.label(egui::RichText::new("按键").strong().color(egui::Color32::from_rgb(85, 85, 85)));
-                                ui.add_space(8.0);
-                                ui.label(egui::RichText::new("基础延迟(ms)").strong().color(egui::Color32::from_rgb(85, 85, 85)));
-                                ui.add_space(8.0);
-                                ui.label(egui::RichText::new("随机范围(ms)").strong().color(egui::Color32::from_rgb(85, 85, 85)));
-                                ui.add_space(8.0);
-                                ui.label(egui::RichText::new("启用").strong().color(egui::Color32::from_rgb(85, 85, 85)));
-                                ui.add_space(8.0);
-                                ui.label(egui::RichText::new("状态").strong().color(egui::Color32::from_rgb(85, 85, 85)));
-                            });
-                        });
-                    ui.separator();
+                            // Header row
+                            ui.label(egui::RichText::new("#").strong().color(egui::Color32::from_rgb(85, 85, 85)));
+                            ui.label(egui::RichText::new("按键").strong().color(egui::Color32::from_rgb(85, 85, 85)));
+                            ui.label(egui::RichText::new("基础延迟(ms)").strong().color(egui::Color32::from_rgb(85, 85, 85)));
+                            ui.label(egui::RichText::new("随机范围(ms)").strong().color(egui::Color32::from_rgb(85, 85, 85)));
+                            ui.label(egui::RichText::new("启用").strong().color(egui::Color32::from_rgb(85, 85, 85)));
+                            ui.label(egui::RichText::new("状态").strong().color(egui::Color32::from_rgb(85, 85, 85)));
+                            ui.end_row();
 
-                    #[derive(Default)]
-                    struct RowEdit {
-                        base_delay: Option<u32>,
-                        random_range: Option<u32>,
-                        enabled: Option<bool>,
-                    }
+                            #[derive(Default)]
+                            struct RowEdit {
+                                base_delay: Option<u32>,
+                                random_range: Option<u32>,
+                                enabled: Option<bool>,
+                            }
 
-                    let mut edits: Vec<RowEdit> =
-                        (0..KEY_SLOT_COUNT).map(|_| RowEdit::default()).collect();
+                            let mut edits: Vec<RowEdit> =
+                                (0..KEY_SLOT_COUNT).map(|_| RowEdit::default()).collect();
 
-                    {
-                        let config = self.config.read();
-                        let key_running = self.key_running.read();
+                            {
+                                let config = self.config.read();
+                                let key_running = self.key_running.read();
 
-                        for (index, key) in config.keys.iter().enumerate() {
-                            let is_capturing = self.capturing_key == Some(index);
-                            let is_active = key_running.get(index).copied().unwrap_or(false);
+                                for (index, key) in config.keys.iter().enumerate() {
+                                    let is_capturing = self.capturing_key == Some(index);
+                                    let is_active = key_running.get(index).copied().unwrap_or(false);
 
-                            let row_bg = if index % 2 == 0 {
-                                egui::Color32::WHITE
-                            } else {
-                                egui::Color32::from_rgb(248, 249, 252)
-                            };
+                                    ui.label(egui::RichText::new(format!("{}", index + 1)).color(egui::Color32::from_rgb(136, 136, 136)));
 
-                            egui::Frame::none()
-                                .fill(row_bg)
-                                .rounding(egui::Rounding::same(3.0))
-                                .inner_margin(egui::Margin::symmetric(4.0, 3.0))
-                                .show(ui, |ui| {
-                                    ui.horizontal(|ui| {
-                                        ui.label(egui::RichText::new(format!("{}", index + 1)).color(egui::Color32::from_rgb(136, 136, 136)));
-                                        ui.add_space(8.0);
-
-                                        let button_text = if is_capturing {
-                                            "按任意键..."
+                                    let button_text = if is_capturing {
+                                        "按任意键..."
+                                    } else {
+                                        &key.key_name
+                                    };
+                                    let button =
+                                        egui::Button::new(button_text).min_size(egui::vec2(90.0, 22.0)).rounding(egui::Rounding::same(3.0));
+                                    if ui.add(button).clicked() {
+                                        if is_capturing {
+                                            self.capturing_key = None;
+                                            GlobalHooks::cancel_capture();
                                         } else {
-                                            &key.key_name
-                                        };
-                                        let button =
-                                            egui::Button::new(button_text).min_size(egui::vec2(90.0, 22.0)).rounding(egui::Rounding::same(3.0));
-                                        if ui.add(button).clicked() {
-                                            if is_capturing {
-                                                self.capturing_key = None;
-                                                GlobalHooks::cancel_capture();
-                                            } else {
-                                                self.capturing_key = Some(index);
-                                                GlobalHooks::begin_key_capture();
-                                            }
+                                            self.capturing_key = Some(index);
+                                            GlobalHooks::begin_key_capture();
                                         }
-                                        ui.add_space(8.0);
+                                    }
 
-                                        let mut base_delay = key.base_delay;
-                                        ui.add(
-                                            egui::DragValue::new(&mut base_delay)
-                                                .range(MIN_DELAY_MS..=MAX_DELAY_MS)
-                                                .speed(10),
+                                    let mut base_delay = key.base_delay;
+                                    ui.add(
+                                        egui::DragValue::new(&mut base_delay)
+                                            .range(MIN_DELAY_MS..=MAX_DELAY_MS)
+                                            .speed(10),
+                                    );
+                                    if base_delay != key.base_delay {
+                                        edits[index].base_delay = Some(base_delay);
+                                    }
+
+                                    let mut random_range = key.random_range;
+                                    ui.add(
+                                        egui::DragValue::new(&mut random_range)
+                                            .range(0..=MAX_DELAY_MS)
+                                            .speed(10),
+                                    );
+                                    if random_range != key.random_range {
+                                        edits[index].random_range = Some(random_range);
+                                    }
+
+                                    let mut enabled = key.enabled;
+                                    ui.checkbox(&mut enabled, "");
+                                    if enabled != key.enabled {
+                                        edits[index].enabled = Some(enabled);
+                                    }
+
+                                    if is_active {
+                                        ui.label(
+                                            egui::RichText::new("\u{25cf}")
+                                                .color(egui::Color32::from_rgb(76, 175, 80)),
                                         );
-                                        if base_delay != key.base_delay {
-                                            edits[index].base_delay = Some(base_delay);
-                                        }
-                                        ui.add_space(8.0);
-
-                                        let mut random_range = key.random_range;
-                                        ui.add(
-                                            egui::DragValue::new(&mut random_range)
-                                                .range(0..=MAX_DELAY_MS)
-                                                .speed(10),
+                                    } else {
+                                        ui.label(
+                                            egui::RichText::new("\u{25cb}")
+                                                .color(egui::Color32::from_rgb(189, 189, 189)),
                                         );
-                                        if random_range != key.random_range {
-                                            edits[index].random_range = Some(random_range);
-                                        }
-                                        ui.add_space(8.0);
+                                    }
 
-                                        let mut enabled = key.enabled;
-                                        ui.checkbox(&mut enabled, "");
-                                        if enabled != key.enabled {
-                                            edits[index].enabled = Some(enabled);
-                                        }
-                                        ui.add_space(8.0);
-
-                                        if is_active {
-                                            ui.label(
-                                                egui::RichText::new("\u{25cf}")
-                                                    .color(egui::Color32::from_rgb(76, 175, 80)),
-                                            );
-                                        } else {
-                                            ui.label(
-                                                egui::RichText::new("\u{25cb}")
-                                                    .color(egui::Color32::from_rgb(189, 189, 189)),
-                                            );
-                                        }
-                                    });
-                                });
-                        }
-                    }
-
-                    if edits.iter().any(|e| {
-                        e.base_delay.is_some() || e.random_range.is_some() || e.enabled.is_some()
-                    }) {
-                        let mut config = self.config.write();
-                        for (index, edit) in edits.into_iter().enumerate() {
-                            if let Some(key) = config.keys.get_mut(index) {
-                                if let Some(d) = edit.base_delay {
-                                    key.base_delay = d;
-                                }
-                                if let Some(r) = edit.random_range {
-                                    key.random_range = r;
-                                }
-                                if let Some(e) = edit.enabled {
-                                    key.enabled = e;
+                                    ui.end_row();
                                 }
                             }
-                        }
-                    }
+
+                            if edits.iter().any(|e| {
+                                e.base_delay.is_some() || e.random_range.is_some() || e.enabled.is_some()
+                            }) {
+                                let mut config = self.config.write();
+                                for (index, edit) in edits.into_iter().enumerate() {
+                                    if let Some(key) = config.keys.get_mut(index) {
+                                        if let Some(d) = edit.base_delay {
+                                            key.base_delay = d;
+                                        }
+                                        if let Some(r) = edit.random_range {
+                                            key.random_range = r;
+                                        }
+                                        if let Some(e) = edit.enabled {
+                                            key.enabled = e;
+                                        }
+                                    }
+                                }
+                            }
+                        });
                 });
             });
     }
@@ -898,6 +933,21 @@ impl eframe::App for AutoKeyApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         setup_visuals(ctx);
 
+        // Detect left Alt key press via egui input as a fallback.
+        // The global hook may miss Alt events when the eframe window has focus
+        // because Windows consumes Alt for menu activation.
+        // We detect Alt by checking if the Alt modifier is newly pressed this frame.
+        {
+            // Simpler approach: check if Alt modifier is held and no other key
+            let alt_mod = ctx.input(|i| i.modifiers.alt);
+            let alt_only = ctx.input(|i| i.modifiers.alt && !i.modifiers.ctrl && !i.modifiers.shift && !i.modifiers.command);
+            // Track state to detect press (not hold)
+            if alt_only && !self.was_alt_held {
+                let _ = self.command_tx.send(AppCommand::ToggleRunning);
+            }
+            self.was_alt_held = alt_mod;
+        }
+
         self.process_ui_actions();
 
         if let Some(tray) = &self.tray {
@@ -918,6 +968,16 @@ impl eframe::App for AutoKeyApp {
             let running = self.is_running.load(Ordering::Acquire);
             let name = self.preferences.read().selected_config.clone();
             tray.update(running, &name);
+        }
+
+        // Update window icon based on running state
+        {
+            let running = self.is_running.load(Ordering::Acquire);
+            if running != self.was_running {
+                self.was_running = running;
+                let icon = create_window_icon(running);
+                ctx.send_viewport_cmd(egui::ViewportCommand::Icon(Some(Arc::new(icon))));
+            }
         }
 
         self.autosave_if_changed();
@@ -966,50 +1026,7 @@ pub fn run_gui(
         (prefs.window_width, prefs.window_height)
     };
 
-    let icon = {
-        const SIZE: usize = 32;
-        let mut rgba = vec![0u8; SIZE * SIZE * 4];
-        let bg_color: [u8; 4] = [21, 101, 192, 255];
-        let accent: [u8; 4] = [211, 47, 47, 255];
-        let white: [u8; 4] = [255, 255, 255, 255];
-        for y in 0..SIZE {
-            for x in 0..SIZE {
-                let offset = (y * SIZE + x) * 4;
-                let dx = x as f32 - 15.5;
-                let dy = y as f32 - 15.5;
-                let distance = (dx * dx + dy * dy).sqrt();
-                let color = if distance <= 14.0 {
-                    bg_color
-                } else if distance <= 15.5 {
-                    let alpha = ((15.5 - distance) / 1.5 * 255.0) as u8;
-                    [bg_color[0], bg_color[1], bg_color[2], alpha]
-                } else {
-                    [0, 0, 0, 0]
-                };
-                rgba[offset..offset + 4].copy_from_slice(&color);
-            }
-        }
-        for y in 0..SIZE {
-            for x in 0..SIZE {
-                let offset = (y * SIZE + x) * 4;
-                let dx = x as f32 - 15.5;
-                let dy = y as f32 - 15.5;
-                let distance = (dx * dx + dy * dy).sqrt();
-                if distance <= 8.0 {
-                    rgba[offset..offset + 4].copy_from_slice(&accent);
-                } else if distance <= 9.5 {
-                    let alpha = ((9.5 - distance) / 1.5 * 255.0) as u8;
-                    let blended = [white[0], white[1], white[2], alpha.min(rgba[offset + 3])];
-                    rgba[offset..offset + 4].copy_from_slice(&blended);
-                }
-            }
-        }
-        Arc::new(egui::IconData {
-            width: SIZE as u32,
-            height: SIZE as u32,
-            rgba,
-        })
-    };
+    let icon = Arc::new(create_window_icon(false));
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
