@@ -141,9 +141,10 @@ unsafe extern "system" fn find_own_main_window(hwnd: HWND, lparam: LPARAM) -> BO
     }
 
     let title = get_window_title(hwnd.0 as isize);
-    // Match our main window by checking for the obfuscated title prefix
-    let marker = crate::obfstr!("调度器");
-    if !title.starts_with(&marker) {
+    // Cache the marker to avoid repeated obfstr! decoding in the EnumWindows callback
+    use once_cell::sync::Lazy;
+    static MARKER: Lazy<String> = Lazy::new(|| crate::obfstr!("调度器"));
+    if !title.starts_with(MARKER.as_str()) {
         return TRUE;
     }
 

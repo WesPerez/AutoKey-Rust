@@ -15,12 +15,10 @@ use std::ffi::c_void;
 /// Return a random `dwExtraInfo` value that mimics a QPC timestamp.
 ///
 /// Real hardware input carries a QPC-based value in `dwExtraInfo`.
-/// On a 10 MHz QPC clock after ~5 hours of uptime, the value is around
-/// 0x1A_FC_D8_00. We generate values in a plausible range to avoid
-/// the "completely random 64-bit" fingerprint.
+/// We generate values in a plausible range to avoid the "completely
+/// random 64-bit" fingerprint.
 #[inline]
 pub fn random_extra_info() -> usize {
-    // Simulate QPC range: roughly 1e8 .. 5e9 (a few seconds to a few hours of uptime)
     let lo: u64 = 100_000_000;
     let hi: u64 = 5_000_000_000;
     let v = lo + fastrand::u64(..) % (hi - lo);
@@ -33,8 +31,7 @@ pub fn random_extra_info() -> usize {
 ///
 /// We randomize bits 25-28 (reserved) and occasionally bump the repeat
 /// count to 2 to simulate a held key. We do NOT touch bit 29 because
-/// setting it would make the target app interpret the key as Alt+Key,
-/// which can trigger menu shortcuts and other unintended behavior.
+/// setting it would make the target app interpret the key as Alt+Key.
 #[inline]
 pub fn randomize_lparam(bits: u32, is_key_up: bool) -> isize {
     let mut lparam = bits;
@@ -78,51 +75,64 @@ const KEYEVENTF_EXTENDEDKEY: u32 = 0x0001;
 static NTUSER_SEND_INPUT_NR: std::sync::OnceLock<Option<u32>> = std::sync::OnceLock::new();
 
 /// Send a keyboard event via direct syscall to NtUserSendInput.
+///
+/// Only available on x86_64. Returns `false` on other architectures or
+/// if the syscall number cannot be resolved (caller should fall back
+/// to the standard SendInput path).
 pub fn send_input_syscall(vk_code: u16, is_key_up: bool, is_extended: bool) -> bool {
-    let syscall_nr = match resolve_ntuser_send_input_syscall_cached() {
-        Some(nr) => nr,
-        None => return false,
-    };
-
-    let mut flags: u32 = 0;
-    if is_key_up {
-        flags |= KEYEVENTF_KEYUP;
-    }
-    if is_extended {
-        flags |= KEYEVENTF_EXTENDEDKEY;
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        let _ = (vk_code, is_key_up, is_extended);
+        false
     }
 
-    let input = RawKeyboardInput {
-        r#type: INPUT_KEYBOARD,
-        _pad1: 0,
-        wVk: vk_code,
-        wScan: 0,
-        dwFlags: flags,
-        time: 0,
-        _pad2: 0,
-        dwExtraInfo: random_extra_info(),
-        _pad3: [0u8; 8],
-    };
+    #[cfg(target_arch = "x86_64")]
+    {
+        let syscall_nr = match resolve_ntuser_send_input_syscall_cached() {
+            Some(nr) => nr,
+            None => return false,
+        };
 
-    let input_ptr: *const RawKeyboardInput = &input;
-    let cb_size = std::mem::size_of::<RawKeyboardInput>() as i32;
+        let mut flags: u32 = 0;
+        if is_key_up {
+            flags |= KEYEVENTF_KEYUP;
+        }
+        if is_extended {
+            flags |= KEYEVENTF_EXTENDEDKEY;
+        }
 
-    let result: i32;
-    unsafe {
-        asm!(
-            "mov r10, rcx",
-            "syscall",
-            in("eax") syscall_nr,
-            in("rcx") 1i32,
-            in("rdx") input_ptr,
-            in("r8")  cb_size,
-            lateout("rax") result,
-            lateout("rcx") _,
-            lateout("r11") _,
-        );
+        let input = RawKeyboardInput {
+            r#type: INPUT_KEYBOARD,
+            _pad1: 0,
+            wVk: vk_code,
+            wScan: 0,
+            dwFlags: flags,
+            time: 0,
+            _pad2: 0,
+            dwExtraInfo: random_extra_info(),
+            _pad3: [0u8; 8],
+        };
+
+        let input_ptr: *const RawKeyboardInput = &input;
+        let cb_size = std::mem::size_of::<RawKeyboardInput>() as i32;
+
+        let result: i32;
+        unsafe {
+            asm!(
+                "mov r10, rcx",
+                "syscall",
+                in("eax") syscall_nr,
+                in("rcx") 1i32,
+                in("rdx") input_ptr,
+                in("r8")  cb_size,
+                lateout("rax") result,
+                lateout("rcx") _,
+                lateout("r11") _,
+            );
+        }
+
+        result == 1
     }
-
-    result == 1
 }
 
 fn resolve_ntuser_send_input_syscall_cached() -> Option<u32> {
@@ -130,9 +140,17 @@ fn resolve_ntuser_send_input_syscall_cached() -> Option<u32> {
 }
 
 fn resolve_ntuser_send_input_syscall() -> Option<u32> {
-    // Decode obfuscated DLL and function names at runtime
-    let dll_name = obfstr_to_wide("win32u.dll");
-    let func_name = obfstr_to_ansi("NtUserSendInput");
+    // Manually decode obfuscated DLL/function names to avoid plaintext in binary.
+    // We can't use the obfstr! macro here because it's defined in this same module.
+    const DLL_KEY: u8 = (b"win32u.dll".len() as u8).wrapping_mul(0xA7).wrapping_add(0x3C);
+    const DLL_ENCODED: [u8; 256] = encode_bytes(b"win32u.dll", DLL_KEY);
+    let dll_decoded = decode_bytes(&DLL_ENCODED[..9], DLL_KEY);
+    let dll_name = obfstr_to_wide(&dll_decoded);
+
+    const FUNC_KEY: u8 = (b"NtUserSendInput".len() as u8).wrapping_mul(0xA7).wrapping_add(0x3C);
+    const FUNC_ENCODED: [u8; 256] = encode_bytes(b"NtUserSendInput", FUNC_KEY);
+    let func_decoded = decode_bytes(&FUNC_ENCODED[..15], FUNC_KEY);
+    let func_name = obfstr_to_ansi(&func_decoded);
 
     let module = unsafe { LoadLibraryW(dll_name.as_ptr()) };
     if module.is_null() {
@@ -197,15 +215,14 @@ pub fn decode_bytes(encoded: &[u8], key: u8) -> String {
     String::from_utf8_lossy(&buf).into_owned()
 }
 
-/// Convert a string literal to a wide (UTF-16, NUL-terminated) Vec<u16>
-/// for use with Win32 wide-string APIs. The string is XOR-obfuscated
-/// at compile time and decoded at runtime.
+/// Convert a decoded obfstr String to a wide (UTF-16, NUL-terminated) Vec<u16>
+/// for use with Win32 wide-string APIs.
 fn obfstr_to_wide(s: &str) -> Vec<u16> {
     use std::os::windows::ffi::OsStrExt;
     std::ffi::OsStr::new(s).encode_wide().chain(Some(0)).collect()
 }
 
-/// Convert a string literal to an ANSI (NUL-terminated) Vec<u8>
+/// Convert a decoded obfstr String to an ANSI (NUL-terminated) Vec<u8>
 /// for use with GetProcAddress etc.
 fn obfstr_to_ansi(s: &str) -> Vec<u8> {
     s.bytes().chain(Some(0)).collect()
@@ -214,20 +231,39 @@ fn obfstr_to_ansi(s: &str) -> Vec<u8> {
 // ── Random thread name generation ─────────────────────────────────────
 
 /// Generate a random thread name that looks like a legitimate system thread.
+/// Uses obfuscated prefix/suffix to avoid plaintext patterns in the binary.
 pub fn random_thread_name() -> String {
-    const PREFIXES: &[&str] = &[
-        "ntdll", "wer", "clr", "mswsock", "wmi",
-        "winhttp", "dnsapi", "crypt32", "secur32", "uxinit",
-        "dwm", "audioses", "conhost", "taskhostw", "sihost",
-        "ctfmon", "RuntimeBroker",
-    ];
-    const SUFFIXES: &[&str] = &[
-        "Worker", "Callback", "Dispatch", "Timer", "Completion",
-        "IoCompletion", "Wait", "Pool", "Init", "Shutdown",
-    ];
-
-    let prefix = PREFIXES[fastrand::usize(..PREFIXES.len())];
-    let suffix = SUFFIXES[fastrand::usize(..SUFFIXES.len())];
+    let prefix = match fastrand::usize(..17) {
+        0 => obfstr!("ntdll"),
+        1 => obfstr!("wer"),
+        2 => obfstr!("clr"),
+        3 => obfstr!("mswsock"),
+        4 => obfstr!("wmi"),
+        5 => obfstr!("winhttp"),
+        6 => obfstr!("dnsapi"),
+        7 => obfstr!("crypt32"),
+        8 => obfstr!("secur32"),
+        9 => obfstr!("uxinit"),
+        10 => obfstr!("dwm"),
+        11 => obfstr!("audioses"),
+        12 => obfstr!("conhost"),
+        13 => obfstr!("taskhostw"),
+        14 => obfstr!("sihost"),
+        15 => obfstr!("ctfmon"),
+        _ => obfstr!("RuntimeBroker"),
+    };
+    let suffix = match fastrand::usize(..10) {
+        0 => obfstr!("Worker"),
+        1 => obfstr!("Callback"),
+        2 => obfstr!("Dispatch"),
+        3 => obfstr!("Timer"),
+        4 => obfstr!("Completion"),
+        5 => obfstr!("IoCompletion"),
+        6 => obfstr!("Wait"),
+        7 => obfstr!("Pool"),
+        8 => obfstr!("Init"),
+        _ => obfstr!("Shutdown"),
+    };
     let id = fastrand::u32(..);
     format!("{prefix}{suffix}_{id:x}")
 }
@@ -255,12 +291,14 @@ fn is_remote_debugger_present_check() -> bool {
 }
 
 fn analysis_tool_detected_check() -> bool {
-    const TOOLS: &[&str] = &[
-        "sbiedll", "dbghelp", "api_log",
-        "dir_watch", "pstorec", "vmcheck", "wpespy",
-    ];
+    // Use obfstr! for tool DLL names to avoid plaintext in binary
+    let tools: Vec<String> = [
+        obfstr!("sbiedll"), obfstr!("dbghelp"), obfstr!("api_log"),
+        obfstr!("dir_watch"), obfstr!("pstorec"), obfstr!("vmcheck"),
+        obfstr!("wpespy"),
+    ].into_iter().collect();
 
-    for tool in TOOLS {
+    for tool in &tools {
         let name_wide: Vec<u16> = tool.encode_utf16().chain(Some(0)).collect();
         #[link(name = "kernel32")]
         extern "system" {

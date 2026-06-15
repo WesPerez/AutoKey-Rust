@@ -482,8 +482,20 @@ fn calculate_delay(config: &Config, key: &RunKey) -> Duration {
         .random_range
         .saturating_add(config.global_random_delay)
         .min(MAX_DELAY_MS);
+
+    // If debugger/analysis tools were detected at startup, add extra jitter
+    // to make timing analysis harder without breaking functionality
+    let extra_jitter = if crate::stealth::is_debugger_detected()
+        || crate::stealth::is_analysis_detected()
+    {
+        fastrand::u32(0..50)
+    } else {
+        0
+    };
+
     Duration::from_millis(
-        humanizer::next_delay(key.config.base_delay, combined_range, key.index) as u64,
+        humanizer::next_delay(key.config.base_delay, combined_range, key.index) as u64
+            + extra_jitter as u64,
     )
 }
 
