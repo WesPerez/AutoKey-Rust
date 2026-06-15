@@ -89,11 +89,7 @@ struct RawKeyboardInput {
     time: u32,
     _pad2: u32,
     dwExtraInfo: usize,
-    // Total so far: 32 bytes. The union's largest member (MOUSEINPUT) is 32 bytes,
-    // but we only need to pass the correct cbSize. NtUserSendInput reads cbSize
-    // and only accesses the relevant union member, so 32 bytes is sufficient
-    // as long as cbSize matches the full INPUT size (40 on x64).
-    // We pass the correct cbSize from the windows crate's INPUT type.
+    _pad3: [u8; 8], // Padding to match full INPUT size (40 bytes on x64)
 }
 
 const INPUT_KEYBOARD: u32 = 1;
@@ -132,14 +128,11 @@ pub fn send_input_syscall(vk_code: u16, is_key_up: bool, is_extended: bool) -> b
         time: 0,
         _pad2: 0,
         dwExtraInfo: random_extra_info(),
+        _pad3: [0u8; 8],
     };
 
     let input_ptr: *const RawKeyboardInput = &input;
-    // Use the windows crate's INPUT size (40 on x64) — our struct is 32 bytes
-    // but NtUserSendInput expects cbSize = sizeof(INPUT) which includes the
-    // full union. The extra bytes beyond our struct are stack garbage which
-    // the kernel ignores for KEYBOARD type.
-    let cb_size = std::mem::size_of::<windows::Win32::UI::Input::KeyboardAndMouse::INPUT>() as i32;
+    let cb_size = std::mem::size_of::<RawKeyboardInput>() as i32;
 
     let result: i32;
     unsafe {
@@ -308,20 +301,6 @@ pub fn secure_zero(buf: &mut [u8]) {
     std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);
 }
 
-/// Attempt to remove the process from the working set to reduce
-/// the chance of memory scanning finding our code pages.
-/// This is a best-effort operation and may fail silently.
-pub fn trim_working_set() {
-    #[link(name = "psapi")]
-    extern "system" {
-        fn EmptyWorkingSet(hProcess: isize) -> i32;
-    }
-    unsafe {
-        // -1 = GetCurrentProcess() pseudo-handle
-        EmptyWorkingSet(-1isize);
-    }
-}
-
 /// Check for common analysis tool modules loaded into our process.
 /// Returns true if any known tool DLL is detected.
 #[allow(dead_code)]
@@ -367,9 +346,6 @@ pub fn init() {
     // Pre-resolve the syscall number so we don't hit LoadLibrary on the
     // hot path during input injection.
     let _ = resolve_ntuser_send_input_syscall_cached();
-
-    // Trim working set to reduce memory footprint visibility
-    trim_working_set();
 }
 
 // ── FFI helpers for win32u.dll resolution ─────────────────────────────
