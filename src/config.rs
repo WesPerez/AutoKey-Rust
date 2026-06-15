@@ -9,7 +9,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use windows::core::PCWSTR;
 
-use crate::obfstr;
 use windows::Win32::Storage::FileSystem::{
     MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
 };
@@ -112,9 +111,6 @@ impl AppPreferences {
     pub fn sanitize(&mut self) {
         self.selected_config = sanitize_config_name(&self.selected_config);
         self.cycle_config_hotkey = self.cycle_config_hotkey.trim().chars().take(64).collect();
-        if self.cycle_config_hotkey.is_empty() {
-            self.cycle_config_hotkey = DEFAULT_CYCLE_HOTKEY.to_owned();
-        }
         if !self.window_x.is_finite() {
             self.window_x = f32::NAN;
         }
@@ -201,12 +197,13 @@ impl Config {
 
 pub fn initialize_store() -> Result<()> {
     fs::create_dir_all(config_directory())?;
+    migrate_previous_rust_store()?;
     migrate_old_csharp_configs()?;
     migrate_old_app_state()?;
 
     let default_path = named_config_path(DEFAULT_CONFIG_NAME);
     if !default_path.exists() {
-        let previous_single = app_directory().join("config.json");
+        let previous_single = app_directory().join(&crate::obfstr!("config.json"));
         let initial = if previous_single.exists() {
             read_config_file(&previous_single).unwrap_or_default()
         } else {
@@ -338,15 +335,15 @@ pub fn sanitize_config_name(name: &str) -> String {
 }
 
 pub fn app_directory() -> PathBuf {
-    app_data_directory().join(obfstr!("KeyScheduler"))
+    app_data_directory().join(&crate::obfstr!("AutoKey-Rust"))
 }
 
 pub fn config_directory() -> PathBuf {
-    app_directory().join("configs")
+    app_directory().join(&crate::obfstr!("configs"))
 }
 
 pub fn preferences_path() -> PathBuf {
-    app_directory().join("app-state.json")
+    app_directory().join(&crate::obfstr!("app-state.json"))
 }
 
 fn app_data_directory() -> PathBuf {
@@ -357,6 +354,10 @@ fn app_data_directory() -> PathBuf {
 
 fn named_config_path(name: &str) -> PathBuf {
     config_directory().join(format!("{}.json", sanitize_config_name(name)))
+}
+
+fn previous_rust_app_directory() -> PathBuf {
+    app_data_directory().join(&crate::obfstr!("KeyScheduler"))
 }
 
 fn read_config_file(path: &Path) -> Result<Config> {
@@ -429,8 +430,54 @@ fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     Ok(())
 }
 
+fn migrate_previous_rust_store() -> Result<()> {
+    let old_directory = previous_rust_app_directory();
+    if !old_directory.exists() || old_directory == app_directory() {
+        return Ok(());
+    }
+
+    let old_configs = old_directory.join(&crate::obfstr!("configs"));
+    if old_configs.exists() {
+        for entry in fs::read_dir(old_configs)? {
+            let entry = entry?;
+            let source = entry.path();
+            if source.extension().and_then(|value| value.to_str()) != Some("json") {
+                continue;
+            }
+            let Some(name) = source.file_stem().and_then(|value| value.to_str()) else {
+                continue;
+            };
+            let destination = named_config_path(name);
+            if destination.exists() {
+                continue;
+            }
+            if let Ok(config) = read_config_file(&source) {
+                write_json_atomic(&destination, &config)?;
+            }
+        }
+    }
+
+    let old_single_config = old_directory.join(&crate::obfstr!("config.json"));
+    let default_path = named_config_path(DEFAULT_CONFIG_NAME);
+    if !default_path.exists() && old_single_config.exists() {
+        if let Ok(config) = read_config_file(&old_single_config) {
+            write_json_atomic(&default_path, &config)?;
+        }
+    }
+
+    let old_preferences = old_directory.join(&crate::obfstr!("app-state.json"));
+    let new_preferences = preferences_path();
+    if !new_preferences.exists() && old_preferences.exists() {
+        let mut preferences: AppPreferences = read_json(&old_preferences).unwrap_or_default();
+        preferences.sanitize();
+        write_json_atomic(&new_preferences, &preferences)?;
+    }
+
+    Ok(())
+}
+
 fn migrate_old_csharp_configs() -> Result<()> {
-    let old_directory = app_data_directory().join("AutoKey").join("configs");
+    let old_directory = app_data_directory().join(&crate::obfstr!("AutoKey")).join(&crate::obfstr!("configs"));
     if !old_directory.exists() {
         return Ok(());
     }
@@ -461,17 +508,17 @@ fn migrate_old_app_state() -> Result<()> {
         return Ok(());
     }
 
-    let old_directory = app_data_directory().join("AutoKey");
+    let old_directory = app_data_directory().join(&crate::obfstr!("AutoKey"));
     if !old_directory.exists() {
         return Ok(());
     }
 
-    let old_state = old_directory.join("app-state.json");
+    let old_state = old_directory.join(&crate::obfstr!("app-state.json"));
     let mut preferences: AppPreferences = read_json(&old_state).unwrap_or_default();
     preferences.sanitize();
 
     let old_config = old_directory
-        .join("configs")
+        .join(&crate::obfstr!("configs"))
         .join(format!("{}.json", preferences.selected_config));
     if let Ok(content) = fs::read_to_string(old_config) {
         if let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) {
@@ -552,5 +599,15 @@ mod tests {
         assert_eq!(preferences.cycle_config_hotkey, "Ctrl+1");
         assert_eq!(preferences.window_width, 1040.0);
         assert_eq!(preferences.window_height, 560.0);
+    }
+
+    #[test]
+    fn allows_clearing_cycle_hotkey() {
+        let mut preferences = AppPreferences {
+            cycle_config_hotkey: "   ".to_owned(),
+            ..AppPreferences::default()
+        };
+        preferences.sanitize();
+        assert_eq!(preferences.cycle_config_hotkey, "");
     }
 }

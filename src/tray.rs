@@ -5,10 +5,13 @@ use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 use winreg::enums::{HKEY_CURRENT_USER, KEY_READ};
 use winreg::RegKey;
 
-use crate::obfstr;
+fn run_key_path() -> String {
+    crate::obfstr!(r"Software\Microsoft\Windows\CurrentVersion\Run")
+}
 
-const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
-const RUN_VALUE: &str = "{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}";
+fn run_value_name() -> String {
+    crate::obfstr!("{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}")
+}
 
 pub struct TrayController {
     tray: TrayIcon,
@@ -29,7 +32,7 @@ impl TrayController {
         let tray = TrayIconBuilder::new()
             .with_menu(Box::new(menu))
             .with_menu_on_left_click(false)
-            .with_tooltip(obfstr!("调度器 - 已停止"))
+            .with_tooltip(&crate::obfstr!("调度器 - 已停止"))
             .with_icon(create_icon(false, crate::config::DEFAULT_CONFIG_NAME)?)
             .build()
             .context("无法创建系统托盘图标")?;
@@ -52,7 +55,7 @@ impl TrayController {
         }
 
         let status = if is_running { "运行中" } else { "已停止" };
-        let tooltip = format!("{} - {} - {}", obfstr!("调度器"), config_name, status);
+        let tooltip = format!("{} - {config_name} - {status}", crate::obfstr!("调度器"));
         let _ = self.tray.set_tooltip(Some(tooltip));
         if let Ok(icon) = create_icon(is_running, config_name) {
             let _ = self.tray.set_icon(Some(icon));
@@ -70,23 +73,27 @@ fn create_icon(is_running: bool, config_name: &str) -> Result<Icon> {
 
 pub fn is_autostart_enabled() -> bool {
     let current_user = RegKey::predef(HKEY_CURRENT_USER);
+    let run_key = run_key_path();
+    let run_value = run_value_name();
     current_user
-        .open_subkey_with_flags(RUN_KEY, KEY_READ)
-        .and_then(|key| key.get_value::<String, _>(RUN_VALUE))
+        .open_subkey_with_flags(&run_key, KEY_READ)
+        .and_then(|key| key.get_value::<String, _>(&run_value))
         .is_ok()
 }
 
 pub fn set_autostart(enabled: bool) -> Result<()> {
     let current_user = RegKey::predef(HKEY_CURRENT_USER);
+    let run_key = run_key_path();
+    let run_value = run_value_name();
     let (key, _) = current_user
-        .create_subkey(RUN_KEY)
+        .create_subkey(&run_key)
         .context("无法打开开机启动注册表项")?;
 
     if enabled {
         let executable: PathBuf = std::env::current_exe()?;
-        key.set_value(RUN_VALUE, &format!("\"{}\"", executable.display()))?;
+        key.set_value(&run_value, &format!("\"{}\"", executable.display()))?;
     } else {
-        let _ = key.delete_value(RUN_VALUE);
+        let _ = key.delete_value(&run_value);
     }
     Ok(())
 }

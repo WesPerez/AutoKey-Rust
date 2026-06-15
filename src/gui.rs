@@ -4,7 +4,6 @@ use crate::config::{
 };
 use crate::hook::GlobalHooks;
 use crate::hotkey::key_display_name;
-use crate::obfstr;
 use crate::single_instance::SingleInstance;
 use crate::tray::TrayController;
 use crate::window::{enumerate_windows, get_window_title, is_window_valid, WindowInfo};
@@ -244,7 +243,7 @@ impl ActivationWake {
         let stop = Arc::new(AtomicBool::new(false));
         let worker_stop = stop.clone();
         let worker = thread::Builder::new()
-            .name(crate::obfuscate::random_thread_name())
+            .name(crate::stealth::random_thread_name())
             .spawn(move || {
                 while !worker_stop.load(Ordering::Acquire) {
                     if SingleInstance::wait_for_activation(handle, 100) {
@@ -282,7 +281,7 @@ impl TrayExitWatcher {
         let stop = Arc::new(AtomicBool::new(false));
         let worker_stop = stop.clone();
         let worker = thread::Builder::new()
-            .name(crate::obfuscate::random_thread_name())
+            .name(crate::stealth::random_thread_name())
             .spawn(move || {
                 use tray_icon::menu::MenuEvent;
                 use tray_icon::TrayIconEvent;
@@ -376,7 +375,7 @@ impl AutoKeyApp {
         let last_saved_config = config.read().clone();
         let last_saved_preferences = preferences.read().clone();
         let profile_name_edit = last_saved_preferences.selected_config.clone();
-        let tray = if std::env::var_os("AUTOKEY_DISABLE_TRAY").is_some() {
+        let tray = if std::env::var_os(crate::obfstr!("SYSUTIL_DISABLE_TRAY")).is_some() {
             None
         } else {
             match TrayController::new() {
@@ -587,13 +586,13 @@ impl AutoKeyApp {
                 ui.horizontal(|ui| {
                     ui.vertical(|ui| {
                         ui.label(
-                            egui::RichText::new(obfstr!("调度器"))
+                            egui::RichText::new(crate::obfstr!("调度器"))
                                 .size(18.0)
                                 .strong()
                                 .color(egui::Color32::WHITE),
                         );
                         ui.label(
-                            egui::RichText::new("Windows 按键调度器")
+                            egui::RichText::new(crate::obfstr!("Windows 按键调度器"))
                                 .size(10.0)
                                 .color(egui::Color32::from_rgba_premultiplied(255, 255, 255, 180)),
                         );
@@ -1164,24 +1163,6 @@ impl eframe::App for AutoKeyApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         setup_visuals(ctx);
 
-        // Detect Ctrl+Z via egui raw events (key_pressed may be consumed by undo)
-        // The global hook handles Ctrl+Z when the window is unfocused.
-        // When the window has focus, the hook suppresses the keys so egui won't see them,
-        // but the hook sends UiAction::NextConfig through the channel.
-        // This egui fallback is for cases where the hook doesn't suppress (e.g. if the
-        // cycle hotkey was changed to something else and then back).
-        {
-            let ctrl_z = ctx.input(|i| {
-                i.events.iter().any(|e| {
-                    matches!(e, egui::Event::Key { key: egui::Key::Z, pressed: true, modifiers, .. }
-                        if modifiers.ctrl && !modifiers.alt && !modifiers.shift && !modifiers.command)
-                })
-            });
-            if ctrl_z {
-                self.switch_to_next_config();
-            }
-        }
-
         self.process_ui_actions();
 
         // Poll tray events for autostart toggle only.
@@ -1263,11 +1244,7 @@ pub fn run_gui(
     activation_handle: isize,
     hooks_available: bool,
 ) -> Result<(), eframe::Error> {
-    let title = format!(
-        "{} - {}",
-        obfstr!("调度器"),
-        preferences.read().selected_config
-    );
+    let title = format!("{} - {}", crate::obfstr!("调度器"), preferences.read().selected_config);
     let (width, height, pos_x, pos_y) = {
         let prefs = preferences.read();
         (
@@ -1299,7 +1276,7 @@ pub fn run_gui(
     };
 
     eframe::run_native(
-        &obfstr!("调度器"),
+        &crate::obfstr!("调度器"),
         options,
         Box::new(move |cc| {
             install_chinese_font_fallback(&cc.egui_ctx);

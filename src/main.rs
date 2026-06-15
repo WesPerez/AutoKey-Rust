@@ -9,9 +9,8 @@ mod humanizer;
 mod icon;
 mod input;
 mod logging;
-mod obfuscate;
 mod single_instance;
-mod syscall;
+mod stealth;
 mod tray;
 mod window;
 
@@ -66,6 +65,9 @@ fn main() {
 }
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
+    // Early anti-detection initialization
+    stealth::init();
+
     config::initialize_store()?;
 
     let instance = match single_instance::SingleInstance::try_acquire() {
@@ -159,7 +161,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn show_fatal_error(message: &str) {
-    let title: Vec<u16> = obfstr!("启动失败").encode_utf16().chain(Some(0)).collect();
+    let title: Vec<u16> = crate::obfstr!("启动失败").encode_utf16().chain(Some(0)).collect();
     let message: Vec<u16> = format!("{message}\0").encode_utf16().collect();
     // SAFETY: Both UTF-16 strings are NUL-terminated for the duration of the call.
     unsafe {

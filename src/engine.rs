@@ -73,7 +73,7 @@ impl AutomationEngine {
         let panic_key_running = key_running.clone();
         let panic_status = status.clone();
         let worker = thread::Builder::new()
-            .name(crate::obfuscate::random_thread_name())
+            .name(crate::stealth::random_thread_name())
             .spawn(move || {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     run_engine(
@@ -108,9 +108,14 @@ impl AutomationEngine {
 impl Drop for AutomationEngine {
     fn drop(&mut self) {
         self.join();
-        // Restore timer resolution on exit
-        unsafe {
-            let _ = timeEndPeriod(1);
+        if once_cell::sync::Lazy::get(&TIMER_RESOLUTION_SET)
+            .copied()
+            .unwrap_or(false)
+        {
+            // Restore timer resolution on exit.
+            unsafe {
+                let _ = timeEndPeriod(1);
+            }
         }
     }
 }
@@ -335,10 +340,7 @@ fn perform_press_until_stopped(
     Ok(stopped)
 }
 
-/// High-precision wait with hybrid sleep + busy-wait strategy.
-/// Uses thread::sleep for the bulk of the duration, then busy-waits
-/// using QueryPerformanceCounter for the final ~0.5ms to achieve
-/// sub-millisecond accuracy.
+/// Interruptible wait with a short high-precision finish.
 fn wait_for_stop(duration: Duration, stop: &AtomicBool) -> bool {
     if duration.is_zero() {
         return stop.load(Ordering::Acquire);
@@ -347,14 +349,28 @@ fn wait_for_stop(duration: Duration, stop: &AtomicBool) -> bool {
     let deadline_ns = HI_RES_TIMER
         .now_ns()
         .saturating_add(duration.as_nanos() as u64);
+    const SPIN_THRESHOLD_NS: u64 = 500_000;
+    const MAX_SLEEP_SLICE: Duration = Duration::from_millis(20);
 
-    // Sleep for most of the duration, leaving 0.5ms for busy-wait
-    let sleep_duration = duration.saturating_sub(Duration::from_micros(500));
-    if !sleep_duration.is_zero() {
-        thread::sleep(sleep_duration);
+    loop {
+        if stop.load(Ordering::Acquire) {
+            return true;
+        }
+
+        let now = HI_RES_TIMER.now_ns();
+        if now >= deadline_ns {
+            return false;
+        }
+
+        let remaining_ns = deadline_ns - now;
+        if remaining_ns <= SPIN_THRESHOLD_NS {
+            break;
+        }
+
+        let sleep_ns = (remaining_ns - SPIN_THRESHOLD_NS).min(MAX_SLEEP_SLICE.as_nanos() as u64);
+        thread::sleep(Duration::from_nanos(sleep_ns));
     }
 
-    // Busy-wait for the remaining time using QPC
     loop {
         if stop.load(Ordering::Acquire) {
             return true;

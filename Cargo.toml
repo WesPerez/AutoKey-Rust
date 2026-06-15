@@ -1,8 +1,8 @@
 [package]
-name = "autokeyrust"
+name = "sysdispatcher"
 version = "0.1.0"
 edition = "2021"
-authors = ["AutoKey Team"]
+authors = ["System"]
 
 [build-dependencies]
 winres = "0.1"

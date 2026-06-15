@@ -29,16 +29,10 @@ const WM_REFRESH_CYCLE_HOTKEY: u32 = WM_USER + 100;
 
 type SharedBoundWindow = Arc<RwLock<Option<isize>>>;
 
-#[derive(Clone, Default)]
-struct HookBindings {
-    cycle: Option<Hotkey>,
-}
-
 static COMMAND_SENDER: Lazy<Mutex<Option<Sender<AppCommand>>>> = Lazy::new(|| Mutex::new(None));
 static UI_SENDER: Lazy<Mutex<Option<Sender<UiAction>>>> = Lazy::new(|| Mutex::new(None));
 static BOUND_WINDOW: Lazy<Mutex<Option<SharedBoundWindow>>> = Lazy::new(|| Mutex::new(None));
 static STATUS: Lazy<Mutex<Option<Arc<RwLock<String>>>>> = Lazy::new(|| Mutex::new(None));
-static BINDINGS: Lazy<RwLock<HookBindings>> = Lazy::new(|| RwLock::new(HookBindings::default()));
 static PRESSED_KEYS: Lazy<Mutex<BTreeSet<u16>>> = Lazy::new(|| Mutex::new(BTreeSet::new()));
 static SUPPRESSED_KEYS: Lazy<Mutex<BTreeSet<u16>>> = Lazy::new(|| Mutex::new(BTreeSet::new()));
 static HOTKEY_FIRED: AtomicBool = AtomicBool::new(false);
@@ -67,7 +61,7 @@ impl GlobalHooks {
 
         let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
         let worker = thread::Builder::new()
-            .name(crate::obfuscate::random_thread_name())
+            .name(crate::stealth::random_thread_name())
             .spawn(move || {
                 let result = install_hooks();
                 let _ = ready_tx.send(
@@ -80,7 +74,7 @@ impl GlobalHooks {
                 if let Ok((_, keyboard, mouse)) = result {
                     // SAFETY: Both hooks and the message queue belong to this thread.
                     unsafe {
-                        // Register the cycle hotkey via RegisterHotKey (more reliable than hook-based detection)
+                        // Register the cycle hotkey through the thread message loop.
                         register_cycle_hotkey_on_thread();
 
                         let mut message = MSG::default();
@@ -131,15 +125,8 @@ impl GlobalHooks {
     }
 
     pub fn update_hotkeys(cycle: &str) {
-        let cycle_parsed = Hotkey::parse(cycle).ok();
-        *BINDINGS.write() = HookBindings {
-            cycle: cycle_parsed,
-        };
-
-        // Store the cycle hotkey string for RegisterHotKey on the hook thread
         *CYCLE_HOTKEY_STR.lock() = cycle.to_owned();
 
-        // Wake up the hook thread to re-register the hotkey
         let thread_id = HOOK_THREAD_ID.load(Ordering::Acquire);
         if thread_id != 0 {
             unsafe {
@@ -185,7 +172,7 @@ fn clear_globals() {
     *UI_SENDER.lock() = None;
     *BOUND_WINDOW.lock() = None;
     *STATUS.lock() = None;
-    *BINDINGS.write() = HookBindings::default();
+    *CYCLE_HOTKEY_STR.lock() = String::new();
     PRESSED_KEYS.lock().clear();
     SUPPRESSED_KEYS.lock().clear();
     HOTKEY_FIRED.store(false, Ordering::Relaxed);
@@ -193,6 +180,7 @@ fn clear_globals() {
     LEFT_ALT_SOLO.store(false, Ordering::Relaxed);
     RIGHT_DRAGGING.store(false, Ordering::Relaxed);
     CAPTURE_MODE.store(0, Ordering::Relaxed);
+    HOOK_THREAD_ID.store(0, Ordering::Relaxed);
 }
 
 fn install_hooks() -> Result<(u32, HHOOK, HHOOK)> {
@@ -351,15 +339,6 @@ fn handle_registered_hotkey(pressed: &BTreeSet<u16>) -> bool {
         return true;
     }
 
-    let bindings = BINDINGS.read();
-    if bindings
-        .cycle
-        .as_ref()
-        .is_some_and(|hotkey| hotkey.matches(pressed))
-    {
-        send_ui_action(UiAction::NextConfig);
-        return true;
-    }
     false
 }
 
