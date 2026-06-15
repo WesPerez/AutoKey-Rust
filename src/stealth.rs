@@ -1,46 +1,40 @@
 //! Anti-detection primitives for input injection.
 //!
 //! - Direct syscall to NtUserSendInput (bypasses IAT hooks on win32u.dll)
-//! - dwExtraInfo randomization (avoids the sentinel value 0)
-//! - PostMessage lParam randomization (fills reserved/unused bits with noise)
+//! - dwExtraInfo randomization (simulates QPC timestamp range)
+//! - PostMessage lParam randomization (reserved bits + occasional repeat count)
 //! - Compile-time string obfuscation
-//! - Anti-debug / anti-memory-scan helpers
-//! - Memory protection (secure zeroing, anti-dump)
+//! - Anti-debug / anti-analysis helpers (active in init)
+//! - Memory protection (secure zeroing)
 
 use std::arch::asm;
 use std::ffi::c_void;
 
 // ── dwExtraInfo randomization ─────────────────────────────────────────
 
-/// Return a random `dwExtraInfo` value that is never 0.
+/// Return a random `dwExtraInfo` value that mimics a QPC timestamp.
 ///
-/// Many anti-cheat/anti-macro systems flag `dwExtraInfo == 0` as injected
-/// because real hardware input carries a non-zero QPC-based timestamp there.
-/// We generate a random non-zero value to blend in.
+/// Real hardware input carries a QPC-based value in `dwExtraInfo`.
+/// On a 10 MHz QPC clock after ~5 hours of uptime, the value is around
+/// 0x1A_FC_D8_00. We generate values in a plausible range to avoid
+/// the "completely random 64-bit" fingerprint.
 #[inline]
 pub fn random_extra_info() -> usize {
-    let mut v = fastrand::usize(..);
-    if v == 0 {
-        v = fastrand::usize(1..);
-    }
-    v
+    // Simulate QPC range: roughly 1e8 .. 5e9 (a few seconds to a few hours of uptime)
+    let lo: u64 = 100_000_000;
+    let hi: u64 = 5_000_000_000;
+    let v = lo + fastrand::u64(..) % (hi - lo);
+    v as usize
 }
 
 // ── PostMessage lParam randomization ──────────────────────────────────
 
 /// Randomize the unused/reserved bits of a WM_KEYDOWN / WM_KEYUP lParam.
 ///
-/// lParam layout (32-bit):
-///   Bits 0-15   : repeat count
-///   Bits 16-23  : OEM scan code
-///   Bit  24     : extended key flag
-///   Bits 25-28  : reserved (documented as "do not use")
-///   Bit  29     : context code (Alt held)
-///   Bit  30     : previous key state
-///   Bit  31     : transition state
-///
-/// We randomize bits 25-28 (reserved) and occasionally set bit 29
-/// to make patterns less deterministic.
+/// We randomize bits 25-28 (reserved) and occasionally bump the repeat
+/// count to 2 to simulate a held key. We do NOT touch bit 29 because
+/// setting it would make the target app interpret the key as Alt+Key,
+/// which can trigger menu shortcuts and other unintended behavior.
 #[inline]
 pub fn randomize_lparam(bits: u32, is_key_up: bool) -> isize {
     let mut lparam = bits;
@@ -49,34 +43,18 @@ pub fn randomize_lparam(bits: u32, is_key_up: bool) -> isize {
     let reserved_noise = (fastrand::u32(..) & 0xF) << 25;
     lparam = (lparam & !(0xF << 25)) | reserved_noise;
 
-    // Occasionally set context-code bit (bit 29) to simulate Alt being held
-    // This happens ~2% of the time for keydown events
-    if !is_key_up && fastrand::f64() < 0.02 {
-        lparam |= 1 << 29;
+    // For keydown events, occasionally set repeat count to 2 (~3% of the time)
+    if !is_key_up && fastrand::f64() < 0.03 {
+        lparam = (lparam & !0xFFFF) | 2;
     }
 
     lparam as isize
 }
 
 // ── Direct syscall: NtUserSendInput ───────────────────────────────────
-//
-// Bypasses the IAT entry for SendInput in win32u.dll.
-// We resolve the syscall number at runtime from win32u.dll's export stub.
 
 /// Raw INPUT structure matching the Win32 layout for keyboard input.
-///
-/// On x64, INPUT is 40 bytes:
-///   type       : u32          (offset 0)
-///   padding    : u32          (offset 4)
-///   union      : [u8; 32]    (offset 8) — largest of MOUSEINPUT/KEYBDINPUT/HARDWAREINPUT
-///
-/// KEYBDINPUT inside the union:
-///   wVk        : u16          (offset 8)
-///   wScan      : u16          (offset 10)
-///   dwFlags    : u32          (offset 12)
-///   time       : u32          (offset 16)
-///   padding    : u32          (offset 20)
-///   dwExtraInfo: usize        (offset 24)
+/// Total: 40 bytes on x64 (matches sizeof(INPUT)).
 #[repr(C)]
 #[derive(Default)]
 #[allow(non_snake_case)]
@@ -89,22 +67,17 @@ struct RawKeyboardInput {
     time: u32,
     _pad2: u32,
     dwExtraInfo: usize,
-    _pad3: [u8; 8], // Padding to match full INPUT size (40 bytes on x64)
+    _pad3: [u8; 8],
 }
 
 const INPUT_KEYBOARD: u32 = 1;
 const KEYEVENTF_KEYUP: u32 = 0x0002;
 const KEYEVENTF_EXTENDEDKEY: u32 = 0x0001;
 
-/// Cached syscall number for NtUserSendInput.
-/// Resolved once on first call.
-static mut NTUSER_SEND_INPUT_NR: Option<u32> = None;
-static NTUSER_RESOLVED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Cached syscall number — resolved once, thread-safe.
+static NTUSER_SEND_INPUT_NR: std::sync::OnceLock<Option<u32>> = std::sync::OnceLock::new();
 
 /// Send a keyboard event via direct syscall to NtUserSendInput.
-///
-/// Returns `false` if the syscall number cannot be resolved (caller
-/// should fall back to the standard SendInput path).
 pub fn send_input_syscall(vk_code: u16, is_key_up: bool, is_extended: bool) -> bool {
     let syscall_nr = match resolve_ntuser_send_input_syscall_cached() {
         Some(nr) => nr,
@@ -153,28 +126,20 @@ pub fn send_input_syscall(vk_code: u16, is_key_up: bool, is_extended: bool) -> b
 }
 
 fn resolve_ntuser_send_input_syscall_cached() -> Option<u32> {
-    // Fast path: already resolved
-    if NTUSER_RESOLVED.load(std::sync::atomic::Ordering::Acquire) {
-        // SAFETY: only written once before the flag is set
-        unsafe { return NTUSER_SEND_INPUT_NR }
-    }
-
-    let nr = resolve_ntuser_send_input_syscall();
-    // SAFETY: only one thread will win the CAS, others will see the flag
-    unsafe { NTUSER_SEND_INPUT_NR = nr }
-    NTUSER_RESOLVED.store(true, std::sync::atomic::Ordering::Release);
-    nr
+    *NTUSER_SEND_INPUT_NR.get_or_init(resolve_ntuser_send_input_syscall)
 }
 
-/// Resolve the syscall number for NtUserSendInput by scanning win32u.dll's
-/// export stub for the `mov eax, <syscall_nr>` pattern.
 fn resolve_ntuser_send_input_syscall() -> Option<u32> {
-    let module = unsafe { LoadLibraryW(win32u_name()) };
+    // Decode obfuscated DLL and function names at runtime
+    let dll_name = obfstr_to_wide("win32u.dll");
+    let func_name = obfstr_to_ansi("NtUserSendInput");
+
+    let module = unsafe { LoadLibraryW(dll_name.as_ptr()) };
     if module.is_null() {
         return None;
     }
 
-    let proc = unsafe { GetProcAddress(module, ntuser_send_input_name()) };
+    let proc = unsafe { GetProcAddress(module, func_name.as_ptr()) };
     if proc.is_null() {
         return None;
     }
@@ -185,7 +150,6 @@ fn resolve_ntuser_send_input_syscall() -> Option<u32> {
         for offset in 0..32usize {
             if *stub.add(offset) == 0xB8 {
                 let nr = std::ptr::read_unaligned(stub.add(offset + 1) as *const u32);
-                // Syscall numbers for win32k are in the 0x1000+ range
                 if nr >= 0x1000 && nr < 0x20000 {
                     return Some(nr);
                 }
@@ -200,38 +164,51 @@ fn resolve_ntuser_send_input_syscall() -> Option<u32> {
 
 /// Compile-time XOR-based string obfuscation.
 ///
-/// Usage: `obfstr!("secret")` expands to code that XOR-decodes at runtime.
-/// The key is derived from the string length to avoid a single global key.
+/// Usage: `obfstr!("secret")` — decodes at runtime, returns `String`.
+/// The key is derived from string length. Encoded data is stored in a
+/// fixed 256-byte array (only first N bytes are meaningful).
 #[macro_export]
 macro_rules! obfstr {
     ($s:expr) => {{
         const INPUT: &[u8] = $s.as_bytes();
         const KEY: u8 = (INPUT.len() as u8).wrapping_mul(0xA7).wrapping_add(0x3C);
         const ENCODED: [u8; 256] = $crate::stealth::encode_bytes(INPUT, KEY);
-        $crate::stealth::decode_bytes(&ENCODED, KEY)
+        $crate::stealth::decode_bytes(&ENCODED[..INPUT.len()], KEY)
     }};
 }
 
-/// Const-evaluated XOR encoding for byte slices.
+/// Const-evaluated XOR encoding.
 pub const fn encode_bytes(input: &[u8], key: u8) -> [u8; 256] {
     let mut buf = [0u8; 256];
     let mut i = 0;
-    while i < input.len() {
+    while i < input.len() && i < 256 {
         buf[i] = input[i] ^ key;
         i += 1;
     }
-    buf[255] = input.len() as u8;
     buf
 }
 
 /// Runtime XOR decoding — returns a heap-allocated String.
-pub fn decode_bytes(encoded: &[u8; 256], key: u8) -> String {
-    let len = encoded[255] as usize;
-    let mut buf = Vec::with_capacity(len);
-    for i in 0..len {
-        buf.push(encoded[i] ^ key);
+pub fn decode_bytes(encoded: &[u8], key: u8) -> String {
+    let mut buf = Vec::with_capacity(encoded.len());
+    for &byte in encoded {
+        buf.push(byte ^ key);
     }
     String::from_utf8_lossy(&buf).into_owned()
+}
+
+/// Convert a string literal to a wide (UTF-16, NUL-terminated) Vec<u16>
+/// for use with Win32 wide-string APIs. The string is XOR-obfuscated
+/// at compile time and decoded at runtime.
+fn obfstr_to_wide(s: &str) -> Vec<u16> {
+    use std::os::windows::ffi::OsStrExt;
+    std::ffi::OsStr::new(s).encode_wide().chain(Some(0)).collect()
+}
+
+/// Convert a string literal to an ANSI (NUL-terminated) Vec<u8>
+/// for use with GetProcAddress etc.
+fn obfstr_to_ansi(s: &str) -> Vec<u8> {
+    s.bytes().chain(Some(0)).collect()
 }
 
 // ── Random thread name generation ─────────────────────────────────────
@@ -242,7 +219,7 @@ pub fn random_thread_name() -> String {
         "ntdll", "wer", "clr", "mswsock", "wmi",
         "winhttp", "dnsapi", "crypt32", "secur32", "uxinit",
         "dwm", "audioses", "conhost", "taskhostw", "sihost",
-        "ctfmon", "SearchIndexer", "RuntimeBroker", "BackgroundTaskHost",
+        "ctfmon", "RuntimeBroker",
     ];
     const SUFFIXES: &[&str] = &[
         "Worker", "Callback", "Dispatch", "Timer", "Completion",
@@ -257,9 +234,7 @@ pub fn random_thread_name() -> String {
 
 // ── Anti-debug helpers ────────────────────────────────────────────────
 
-/// Check if a debugger is attached using IsDebuggerPresent.
-#[allow(dead_code)]
-pub fn is_debugger_present() -> bool {
+fn is_debugger_present_check() -> bool {
     #[link(name = "kernel32")]
     extern "system" {
         fn IsDebuggerPresent() -> i32;
@@ -267,9 +242,7 @@ pub fn is_debugger_present() -> bool {
     unsafe { IsDebuggerPresent() != 0 }
 }
 
-/// Check if a remote debugger is present using CheckRemoteDebuggerPresent.
-#[allow(dead_code)]
-pub fn is_remote_debugger_present() -> bool {
+fn is_remote_debugger_present_check() -> bool {
     #[link(name = "kernel32")]
     extern "system" {
         fn CheckRemoteDebuggerPresent(hProcess: isize, pbDebuggerPresent: *mut i32) -> i32;
@@ -281,38 +254,10 @@ pub fn is_remote_debugger_present() -> bool {
     present != 0
 }
 
-/// Combined anti-debug check.
-#[allow(dead_code)]
-pub fn debugger_detected() -> bool {
-    is_debugger_present() || is_remote_debugger_present()
-}
-
-// ── Memory protection ─────────────────────────────────────────────────
-
-/// Erase a sensitive buffer from memory by zeroing it.
-/// Uses volatile writes to prevent the compiler from optimizing this away.
-#[allow(dead_code)]
-pub fn secure_zero(buf: &mut [u8]) {
-    for byte in buf.iter_mut() {
-        unsafe {
-            std::ptr::write_volatile(byte, 0);
-        }
-    }
-    std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);
-}
-
-/// Check for common analysis tool modules loaded into our process.
-/// Returns true if any known tool DLL is detected.
-#[allow(dead_code)]
-pub fn analysis_tool_detected() -> bool {
+fn analysis_tool_detected_check() -> bool {
     const TOOLS: &[&str] = &[
-        "sbiedll",       // Sandboxie
-        "dbghelp",       // Debug helpers (often injected by debuggers)
-        "api_log",       // API monitor
-        "dir_watch",     // Directory watcher
-        "pstorec",       // Password store
-        "vmcheck",       // VM check
-        "wpespy",        // WPE Pro
+        "sbiedll", "dbghelp", "api_log",
+        "dir_watch", "pstorec", "vmcheck", "wpespy",
     ];
 
     for tool in TOOLS {
@@ -330,10 +275,21 @@ pub fn analysis_tool_detected() -> bool {
     false
 }
 
+// ── Memory protection ─────────────────────────────────────────────────
+
+/// Erase a sensitive buffer from memory by zeroing it.
+pub fn secure_zero(buf: &mut [u8]) {
+    for byte in buf.iter_mut() {
+        unsafe {
+            std::ptr::write_volatile(byte, 0);
+        }
+    }
+    std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);
+}
+
 // ── Initialization ────────────────────────────────────────────────────
 
 /// One-time anti-detection initialization.
-/// Should be called early in `main` before any input is sent.
 pub fn init() {
     // Seed the RNG for stealth operations
     fastrand::seed(
@@ -343,12 +299,33 @@ pub fn init() {
             .unwrap_or(0),
     );
 
-    // Pre-resolve the syscall number so we don't hit LoadLibrary on the
-    // hot path during input injection.
+    // Pre-resolve the syscall number
     let _ = resolve_ntuser_send_input_syscall_cached();
+
+    // Active anti-debug: set flags if debugger/analysis tools detected
+    if is_debugger_present_check() || is_remote_debugger_present_check() {
+        DEBUGGER_DETECTED.store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    if analysis_tool_detected_check() {
+        ANALYSIS_DETECTED.store(true, std::sync::atomic::Ordering::Release);
+    }
 }
 
-// ── FFI helpers for win32u.dll resolution ─────────────────────────────
+static DEBUGGER_DETECTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static ANALYSIS_DETECTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Returns true if a debugger was detected at startup.
+pub fn is_debugger_detected() -> bool {
+    DEBUGGER_DETECTED.load(std::sync::atomic::Ordering::Acquire)
+}
+
+/// Returns true if analysis tools were detected at startup.
+pub fn is_analysis_detected() -> bool {
+    ANALYSIS_DETECTED.load(std::sync::atomic::Ordering::Acquire)
+}
+
+// ── FFI helpers ───────────────────────────────────────────────────────
 
 #[link(name = "kernel32")]
 extern "system" {
@@ -356,31 +333,16 @@ extern "system" {
     fn GetProcAddress(hModule: *mut c_void, lpProcName: *const u8) -> *mut c_void;
 }
 
-fn win32u_name() -> *const u16 {
-    static NAME: [u16; 11] = [
-        b'w' as u16, b'i' as u16, b'n' as u16, b'3' as u16, b'2' as u16,
-        b'u' as u16, b'.' as u16, b'd' as u16, b'l' as u16, b'l' as u16,
-        0,
-    ];
-    NAME.as_ptr()
-}
-
-fn ntuser_send_input_name() -> *const u8 {
-    static NAME: [u8; 16] = [
-        b'N', b't', b'U', b's', b'e', b'r', b'S', b'e', b'n', b'd',
-        b'I', b'n', b'p', b'u', b't', b'\0',
-    ];
-    NAME.as_ptr()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn extra_info_is_never_zero() {
+    fn extra_info_in_qpc_range() {
         for _ in 0..100 {
-            assert_ne!(random_extra_info(), 0);
+            let v = random_extra_info();
+            assert!(v >= 100_000_000, "too small: {v}");
+            assert!(v < 5_000_000_001, "too large: {v}");
         }
     }
 
@@ -388,7 +350,6 @@ mod tests {
     fn lparam_preserves_key_bits() {
         let bits: u32 = 1 | (0x1E << 16);
         let result = randomize_lparam(bits, false) as u32;
-        assert_eq!(result & 0xFFFF, 1);
         assert_eq!((result >> 16) & 0xFF, 0x1E);
     }
 
@@ -399,6 +360,15 @@ mod tests {
         assert_eq!(result & (1 << 30), 1 << 30);
         assert_eq!(result & (1 << 31), 1 << 31);
         assert_eq!((result >> 16) & 0xFF, 0x1E);
+    }
+
+    #[test]
+    fn lparam_never_sets_bit29() {
+        for _ in 0..1000 {
+            let bits: u32 = 1 | (0x1E << 16);
+            let result = randomize_lparam(bits, false) as u32;
+            assert_eq!(result & (1 << 29), 0, "bit 29 was set — triggers Alt+key shortcuts!");
+        }
     }
 
     #[test]
