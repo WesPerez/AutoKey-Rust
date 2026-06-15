@@ -1,14 +1,10 @@
 //! Anti-detection primitives for input injection.
 //!
-//! - Direct syscall to NtUserSendInput (bypasses IAT hooks on win32u.dll)
 //! - dwExtraInfo randomization (simulates QPC timestamp range)
 //! - PostMessage lParam randomization (reserved bits + occasional repeat count)
 //! - Compile-time string obfuscation
 //! - Anti-debug / anti-analysis helpers (active in init)
 //! - Memory protection (secure zeroing)
-
-use std::arch::asm;
-use std::ffi::c_void;
 
 // ── dwExtraInfo randomization ─────────────────────────────────────────
 
@@ -48,136 +44,6 @@ pub fn randomize_lparam(bits: u32, is_key_up: bool) -> isize {
     lparam as isize
 }
 
-// ── Direct syscall: NtUserSendInput ───────────────────────────────────
-
-/// Raw INPUT structure matching the Win32 layout for keyboard input.
-/// Total: 40 bytes on x64 (matches sizeof(INPUT)).
-#[repr(C)]
-#[derive(Default)]
-#[allow(non_snake_case)]
-struct RawKeyboardInput {
-    r#type: u32,
-    _pad1: u32,
-    wVk: u16,
-    wScan: u16,
-    dwFlags: u32,
-    time: u32,
-    _pad2: u32,
-    dwExtraInfo: usize,
-    _pad3: [u8; 8],
-}
-
-const INPUT_KEYBOARD: u32 = 1;
-const KEYEVENTF_KEYUP: u32 = 0x0002;
-const KEYEVENTF_EXTENDEDKEY: u32 = 0x0001;
-
-/// Cached syscall number — resolved once, thread-safe.
-static NTUSER_SEND_INPUT_NR: std::sync::OnceLock<Option<u32>> = std::sync::OnceLock::new();
-
-/// Send a keyboard event via direct syscall to NtUserSendInput.
-///
-/// Only available on x86_64. Returns `false` on other architectures or
-/// if the syscall number cannot be resolved (caller should fall back
-/// to the standard SendInput path).
-pub fn send_input_syscall(vk_code: u16, is_key_up: bool, is_extended: bool) -> bool {
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        let _ = (vk_code, is_key_up, is_extended);
-        false
-    }
-
-    #[cfg(target_arch = "x86_64")]
-    {
-        let syscall_nr = match resolve_ntuser_send_input_syscall_cached() {
-            Some(nr) => nr,
-            None => return false,
-        };
-
-        let mut flags: u32 = 0;
-        if is_key_up {
-            flags |= KEYEVENTF_KEYUP;
-        }
-        if is_extended {
-            flags |= KEYEVENTF_EXTENDEDKEY;
-        }
-
-        let input = RawKeyboardInput {
-            r#type: INPUT_KEYBOARD,
-            _pad1: 0,
-            wVk: vk_code,
-            wScan: 0,
-            dwFlags: flags,
-            time: 0,
-            _pad2: 0,
-            dwExtraInfo: random_extra_info(),
-            _pad3: [0u8; 8],
-        };
-
-        let input_ptr: *const RawKeyboardInput = &input;
-        let cb_size = std::mem::size_of::<RawKeyboardInput>() as i32;
-
-        let result: i32;
-        unsafe {
-            asm!(
-                "mov r10, rcx",
-                "syscall",
-                in("eax") syscall_nr,
-                in("rcx") 1i32,
-                in("rdx") input_ptr,
-                in("r8")  cb_size,
-                lateout("rax") result,
-                lateout("rcx") _,
-                lateout("r11") _,
-            );
-        }
-
-        result == 1
-    }
-}
-
-fn resolve_ntuser_send_input_syscall_cached() -> Option<u32> {
-    *NTUSER_SEND_INPUT_NR.get_or_init(resolve_ntuser_send_input_syscall)
-}
-
-fn resolve_ntuser_send_input_syscall() -> Option<u32> {
-    // Manually decode obfuscated DLL/function names to avoid plaintext in binary.
-    // We can't use the obfstr! macro here because it's defined in this same module.
-    const DLL_KEY: u8 = (b"win32u.dll".len() as u8).wrapping_mul(0xA7).wrapping_add(0x3C);
-    const DLL_ENCODED: [u8; 256] = encode_bytes(b"win32u.dll", DLL_KEY);
-    let dll_decoded = decode_bytes(&DLL_ENCODED[..9], DLL_KEY);
-    let dll_name = obfstr_to_wide(&dll_decoded);
-
-    const FUNC_KEY: u8 = (b"NtUserSendInput".len() as u8).wrapping_mul(0xA7).wrapping_add(0x3C);
-    const FUNC_ENCODED: [u8; 256] = encode_bytes(b"NtUserSendInput", FUNC_KEY);
-    let func_decoded = decode_bytes(&FUNC_ENCODED[..15], FUNC_KEY);
-    let func_name = obfstr_to_ansi(&func_decoded);
-
-    let module = unsafe { LoadLibraryW(dll_name.as_ptr()) };
-    if module.is_null() {
-        return None;
-    }
-
-    let proc = unsafe { GetProcAddress(module, func_name.as_ptr()) };
-    if proc.is_null() {
-        return None;
-    }
-
-    // Scan for the B8 opcode (mov eax, imm32) in the first 32 bytes.
-    let stub = proc as *const u8;
-    unsafe {
-        for offset in 0..32usize {
-            if *stub.add(offset) == 0xB8 {
-                let nr = std::ptr::read_unaligned(stub.add(offset + 1) as *const u32);
-                if nr >= 0x1000 && nr < 0x20000 {
-                    return Some(nr);
-                }
-            }
-        }
-    }
-
-    None
-}
-
 // ── String obfuscation ────────────────────────────────────────────────
 
 /// Compile-time XOR-based string obfuscation.
@@ -213,19 +79,6 @@ pub fn decode_bytes(encoded: &[u8], key: u8) -> String {
         buf.push(byte ^ key);
     }
     String::from_utf8_lossy(&buf).into_owned()
-}
-
-/// Convert a decoded obfstr String to a wide (UTF-16, NUL-terminated) Vec<u16>
-/// for use with Win32 wide-string APIs.
-fn obfstr_to_wide(s: &str) -> Vec<u16> {
-    use std::os::windows::ffi::OsStrExt;
-    std::ffi::OsStr::new(s).encode_wide().chain(Some(0)).collect()
-}
-
-/// Convert a decoded obfstr String to an ANSI (NUL-terminated) Vec<u8>
-/// for use with GetProcAddress etc.
-fn obfstr_to_ansi(s: &str) -> Vec<u8> {
-    s.bytes().chain(Some(0)).collect()
 }
 
 // ── Random thread name generation ─────────────────────────────────────
@@ -291,11 +144,15 @@ fn is_remote_debugger_present_check() -> bool {
 }
 
 fn analysis_tool_detected_check() -> bool {
-    // Use obfstr! for tool DLL names to avoid plaintext in binary
+    // Only check for tools that are NOT commonly loaded by normal Windows.
+    // "dbghelp" is excluded because it's loaded by many normal processes.
     let tools: Vec<String> = [
-        obfstr!("sbiedll"), obfstr!("dbghelp"), obfstr!("api_log"),
-        obfstr!("dir_watch"), obfstr!("pstorec"), obfstr!("vmcheck"),
-        obfstr!("wpespy"),
+        obfstr!("sbiedll"),      // Sandboxie
+        obfstr!("api_log"),      // API Monitor
+        obfstr!("dir_watch"),    // Directory watcher
+        obfstr!("pstorec"),      // Password store
+        obfstr!("vmcheck"),      // VM check
+        obfstr!("wpespy"),       // WPE Pro
     ].into_iter().collect();
 
     for tool in &tools {
@@ -316,6 +173,7 @@ fn analysis_tool_detected_check() -> bool {
 // ── Memory protection ─────────────────────────────────────────────────
 
 /// Erase a sensitive buffer from memory by zeroing it.
+#[allow(dead_code)]
 pub fn secure_zero(buf: &mut [u8]) {
     for byte in buf.iter_mut() {
         unsafe {
@@ -336,9 +194,6 @@ pub fn init() {
             .map(|d| d.as_nanos() as u64)
             .unwrap_or(0),
     );
-
-    // Pre-resolve the syscall number
-    let _ = resolve_ntuser_send_input_syscall_cached();
 
     // Active anti-debug: set flags if debugger/analysis tools detected
     if is_debugger_present_check() || is_remote_debugger_present_check() {
@@ -361,14 +216,6 @@ pub fn is_debugger_detected() -> bool {
 /// Returns true if analysis tools were detected at startup.
 pub fn is_analysis_detected() -> bool {
     ANALYSIS_DETECTED.load(std::sync::atomic::Ordering::Acquire)
-}
-
-// ── FFI helpers ───────────────────────────────────────────────────────
-
-#[link(name = "kernel32")]
-extern "system" {
-    fn LoadLibraryW(lpFileName: *const u16) -> *mut c_void;
-    fn GetProcAddress(hModule: *mut c_void, lpProcName: *const u8) -> *mut c_void;
 }
 
 #[cfg(test)]

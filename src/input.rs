@@ -66,12 +66,16 @@ fn post_window_event(hwnd: isize, vk_code: u16, is_key_up: bool) -> Result<()> {
 fn send_input_event(vk_code: u16, is_key_up: bool) -> Result<()> {
     let is_extended = is_extended_key(vk_code);
 
-    // Try direct syscall first (bypasses IAT hooks on win32u.dll)
-    if stealth::send_input_syscall(vk_code, is_key_up, is_extended) {
-        return Ok(());
-    }
+    // NOTE: Direct syscall to NtUserSendInput is disabled because:
+    // 1. The syscall number resolution (0xB8 opcode scan) is heuristic and
+    //    may match the wrong instruction, calling an unintended kernel function.
+    // 2. Direct syscalls bypass the LLKHF_INJECTED flag that the kernel sets
+    //    for SendInput events. Without this flag, our own WH_KEYBOARD_LL hook
+    //    treats injected keys as real input, breaking the Alt toggle state machine.
+    //
+    // The standard SendInput path with randomized dwExtraInfo is sufficient
+    // for anti-detection purposes.
 
-    // Fallback to standard SendInput with randomized dwExtraInfo
     // SAFETY: INPUT is fully initialized and cbSize exactly matches INPUT.
     unsafe {
         let mut flags = KEYBD_EVENT_FLAGS(0);
