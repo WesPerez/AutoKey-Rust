@@ -40,7 +40,7 @@ cargo build --release
 输出文件：
 
 ```text
-target\release\autokey.exe
+target\release\autokeyrust.exe
 ```
 
 ## 使用

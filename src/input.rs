@@ -166,19 +166,15 @@ mod tests {
     fn random_extra_info_distribution() {
         let mut has_zero = false;
         let mut has_small = false;
-        let mut has_large = false;
         for _ in 0..500 {
             let val = random_extra_info();
             if val == 0 {
                 has_zero = true;
             } else if val <= 255 {
                 has_small = true;
-            } else {
-                has_large = true;
             }
         }
         assert!(has_zero, "should produce 0 values");
         assert!(has_small, "should produce small non-zero values");
-        // has_large is probabilistic, may not always trigger in 500 samples
     }
 }

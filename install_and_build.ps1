@@ -108,7 +108,7 @@ Write-Host "[成功] 编译完成！" -ForegroundColor Green
 Write-Host "========================================" -ForegroundColor Green
 Write-Host ""
 
-$exePath = "target\release\autokey.exe"
+$exePath = "target\release\autokeyrust.exe"
 if (Test-Path $exePath) {
     Write-Host "产物位置: $exePath" -ForegroundColor Cyan
     $fileInfo = Get-Item $exePath

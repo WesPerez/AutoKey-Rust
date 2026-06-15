@@ -75,7 +75,7 @@ fn generate_ico(path: &Path) {
     ico.write_all(&32u16.to_le_bytes()).unwrap();
 
     let bmp_header_size = 40u32;
-    let and_mask_row_size = ((SIZE + 31) / 32) * 4;
+    let and_mask_row_size = SIZE.div_ceil(32) * 4;
     let and_mask_size = (and_mask_row_size * SIZE) as u32;
     let pixel_data_size = (SIZE * SIZE * 4) as u32;
     let data_size = bmp_header_size + pixel_data_size + and_mask_size;
@@ -96,7 +96,8 @@ fn generate_ico(path: &Path) {
 
     for y in (0..SIZE).rev() {
         let row_start = y * SIZE * 4;
-        ico.write_all(&bgra[row_start..row_start + SIZE * 4]).unwrap();
+        ico.write_all(&bgra[row_start..row_start + SIZE * 4])
+            .unwrap();
     }
 
     let and_mask = vec![0u8; and_mask_size as usize];

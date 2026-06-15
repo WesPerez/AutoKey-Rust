@@ -37,7 +37,11 @@ pub fn find_own_hwnd() -> Option<isize> {
             LPARAM((&mut found as *mut isize) as isize),
         );
     }
-    if found == 0 { None } else { Some(found) }
+    if found == 0 {
+        None
+    } else {
+        Some(found)
+    }
 }
 
 pub fn restore_own_main_window() -> bool {
@@ -58,6 +62,15 @@ pub fn restore_own_main_window() -> bool {
         let _ = SetForegroundWindow(hwnd);
     }
     true
+}
+
+pub fn request_own_main_window_close() -> bool {
+    let Some(hwnd) = find_own_hwnd() else {
+        return false;
+    };
+    // SAFETY: Posting WM_CLOSE to our own top-level window requests the normal
+    // eframe close path instead of bypassing Drop/autosave with process::exit.
+    unsafe { PostMessageW(HWND(hwnd as *mut _), WM_CLOSE, WPARAM(0), LPARAM(0)).is_ok() }
 }
 
 pub fn get_window_title(hwnd: isize) -> String {

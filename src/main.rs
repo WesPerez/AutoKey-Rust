@@ -6,7 +6,7 @@ mod gui;
 mod hook;
 mod hotkey;
 mod humanizer;
-mod icon_gen;
+mod icon;
 mod input;
 mod logging;
 mod obfuscate;
@@ -32,7 +32,6 @@ pub enum AppCommand {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UiAction {
     NextConfig,
-    LoadConfig(String),
     CapturedKey(u16),
     CapturedHotkey(String),
 }

@@ -57,14 +57,14 @@ if ($LASTEXITCODE -eq 0) {
     Write-Host "BUILD SUCCESSFUL!" -ForegroundColor Green
     Write-Host "========================================" -ForegroundColor Green
     Write-Host ""
-    Write-Host "Executable: target\release\autokey.exe" -ForegroundColor Cyan
+    Write-Host "Executable: target\release\autokeyrust.exe" -ForegroundColor Cyan
 
-    if (Test-Path "target\release\autokey.exe") {
-        $size = (Get-Item "target\release\autokey.exe").Length
+    if (Test-Path "target\release\autokeyrust.exe") {
+        $size = (Get-Item "target\release\autokeyrust.exe").Length
         Write-Host "Size: $([math]::Round($size/1MB, 2)) MB" -ForegroundColor Gray
         Write-Host ""
         Write-Host "Starting program..." -ForegroundColor Yellow
-        Start-Process "target\release\autokey.exe"
+        Start-Process "target\release\autokeyrust.exe"
         Write-Host "Program started!" -ForegroundColor Green
     }
 } else {

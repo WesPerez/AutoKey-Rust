@@ -344,7 +344,9 @@ fn wait_for_stop(duration: Duration, stop: &AtomicBool) -> bool {
         return stop.load(Ordering::Acquire);
     }
 
-    let deadline_ns = HI_RES_TIMER.now_ns().saturating_add(duration.as_nanos() as u64);
+    let deadline_ns = HI_RES_TIMER
+        .now_ns()
+        .saturating_add(duration.as_nanos() as u64);
 
     // Sleep for most of the duration, leaving 0.5ms for busy-wait
     let sleep_duration = duration.saturating_sub(Duration::from_micros(500));

@@ -33,13 +33,13 @@ echo ========================================
 echo 编译成功！
 echo ========================================
 echo.
-echo 产物: target\release\autokey.exe
+echo 产物: target\release\autokeyrust.exe
 echo.
 
-if exist "target\release\autokey.exe" (
+if exist "target\release\autokeyrust.exe" (
     echo 按任意键运行...
     pause >nul
-    start "" "target\release\autokey.exe"
+    start "" "target\release\autokeyrust.exe"
 ) else (
     echo [错误] 未找到编译产物
 )

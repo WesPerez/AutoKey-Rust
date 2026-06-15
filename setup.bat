@@ -124,11 +124,11 @@ if %errorlevel% neq 0 (
 
 echo [SUCCESS] Build complete!
 echo.
-echo Output: target\release\autokey.exe
+echo Output: target\release\autokeyrust.exe
 echo.
 
-if exist "target\release\autokey.exe" (
-    for %%F in ("target\release\autokey.exe") do (
+if exist "target\release\autokeyrust.exe" (
+    for %%F in ("target\release\autokeyrust.exe") do (
         echo File size: %%~zF bytes
     )
     echo.
@@ -138,11 +138,11 @@ if exist "target\release\autokey.exe" (
 
     echo.
     echo Starting AutoKey-Rust...
-    start "" "target\release\autokey.exe"
+    start "" "target\release\autokeyrust.exe"
 
     echo.
     echo [INFO] Program started
-    echo [INFO] To run again: target\release\autokey.exe
+    echo [INFO] To run again: target\release\autokeyrust.exe
 ) else (
     echo [ERROR] Executable not found
 )

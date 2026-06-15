@@ -11,6 +11,5 @@
   "independent_loop": true,
   "global_random_delay": 100,
   "max_loops": -1,
-  "timing_variation_level": 2,
-  "config_hotkey": "Ctrl+1"
+  "timing_variation_level": 2
 }

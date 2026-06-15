@@ -15,26 +15,31 @@ const FATIGUE_THRESHOLD: u32 = 12;
 
 const NUM_STATES: usize = 8;
 
-#[derive(Default)]
 struct MarkovChain {
     current: usize,
     transitions: [[f64; NUM_STATES]; NUM_STATES],
 }
 
+impl Default for MarkovChain {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MarkovChain {
     fn new() -> Self {
         let mut transitions = [[0.0; NUM_STATES]; NUM_STATES];
-        for i in 0..NUM_STATES {
-            for j in 0..NUM_STATES {
+        for (i, row) in transitions.iter_mut().enumerate() {
+            for (j, probability) in row.iter_mut().enumerate() {
                 let dist = (i as f64 - j as f64).abs();
                 // Exponential decay: staying near current state is more probable
                 // with occasional jumps to distant states
-                transitions[i][j] = (-dist * 0.6).exp();
+                *probability = (-dist * 0.6).exp();
             }
             // Normalize row to sum to 1.0
-            let sum: f64 = transitions[i].iter().sum();
-            for j in 0..NUM_STATES {
-                transitions[i][j] /= sum;
+            let sum: f64 = row.iter().sum();
+            for probability in row {
+                *probability /= sum;
             }
         }
         Self {
@@ -134,7 +139,9 @@ pub fn next_delay(base_delay: u32, random_range: u32, profile_id: usize) -> u32 
     if level >= 1 && random_range > 0 {
         let markov_bias = timing.markov.bias();
         let biased = f64::from(delay) * (1.0 + markov_bias);
-        delay = biased.round().clamp(f64::from(min_delay), f64::from(max_delay)) as u32;
+        delay = biased
+            .round()
+            .clamp(f64::from(min_delay), f64::from(max_delay)) as u32;
     }
 
     let tempo_delta = (level >= 2).then(|| next_gaussian(&mut timing) * 0.006);

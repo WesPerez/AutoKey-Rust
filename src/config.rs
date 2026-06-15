@@ -63,8 +63,6 @@ pub struct Config {
         rename = "timing_variation_level"
     )]
     pub timing_variation_level: u8,
-    #[serde(alias = "ConfigHotkey")]
-    pub config_hotkey: String,
 }
 
 impl Default for Config {
@@ -80,7 +78,6 @@ impl Default for Config {
             global_random_delay: 100,
             max_loops: -1,
             timing_variation_level: 2,
-            config_hotkey: String::new(),
         }
     }
 }
@@ -146,8 +143,6 @@ struct LegacyConfig {
     global_random_delay: u32,
     #[serde(rename = "LoopMode")]
     loop_mode: String,
-    #[serde(rename = "ConfigHotkey")]
-    config_hotkey: String,
     #[serde(rename = "AntiPatternLevel")]
     timing_variation_level: u8,
 }
@@ -159,7 +154,6 @@ impl Default for LegacyConfig {
             independent_loop: true,
             global_random_delay: 100,
             loop_mode: "循环到手动停止".to_owned(),
-            config_hotkey: String::new(),
             timing_variation_level: 2,
         }
     }
@@ -187,7 +181,6 @@ impl Config {
         self.global_random_delay = self.global_random_delay.min(MAX_DELAY_MS);
         self.max_loops = self.max_loops.clamp(-1, 1_000_000);
         self.timing_variation_level = self.timing_variation_level.min(2);
-        self.config_hotkey = self.config_hotkey.trim().chars().take(64).collect();
     }
 
     pub fn validation_error(&self) -> Option<String> {
@@ -380,7 +373,6 @@ fn read_config_file(path: &Path) -> Result<Config> {
             global_random_delay: legacy.global_random_delay,
             max_loops: parse_legacy_loop_mode(&legacy.loop_mode),
             timing_variation_level: legacy.timing_variation_level,
-            config_hotkey: legacy.config_hotkey,
         }
     } else {
         serde_json::from_value(value)?
@@ -517,7 +509,6 @@ mod tests {
             max_loops: i32::MAX,
             timing_variation_level: 9,
             independent_loop: true,
-            config_hotkey: String::new(),
         };
 
         config.sanitize();
@@ -551,6 +542,8 @@ mod tests {
         let mut preferences = AppPreferences {
             selected_config: " demo? ".to_owned(),
             cycle_config_hotkey: "  Ctrl+1  ".to_owned(),
+            window_x: f32::NAN,
+            window_y: f32::NAN,
             window_width: f32::NAN,
             window_height: 10.0,
         };

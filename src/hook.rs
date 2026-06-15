@@ -21,9 +21,6 @@ const CYCLE_HOTKEY_ID: i32 = 1;
 /// Updated by `update_hotkeys` and read by the hook thread.
 static CYCLE_HOTKEY_STR: Lazy<Mutex<String>> = Lazy::new(|| Mutex::new(String::new()));
 
-/// Signal for the hook thread to re-register the cycle hotkey.
-static CYCLE_HOTKEY_DIRTY: AtomicBool = AtomicBool::new(false);
-
 /// The thread ID of the hook thread, used to post wake-up messages.
 static HOOK_THREAD_ID: AtomicU32 = AtomicU32::new(0);
 
@@ -35,7 +32,6 @@ type SharedBoundWindow = Arc<RwLock<Option<isize>>>;
 #[derive(Clone, Default)]
 struct HookBindings {
     cycle: Option<Hotkey>,
-    profiles: Vec<(String, Hotkey)>,
 }
 
 static COMMAND_SENDER: Lazy<Mutex<Option<Sender<AppCommand>>>> = Lazy::new(|| Mutex::new(None));
@@ -94,7 +90,9 @@ impl GlobalHooks {
                                 break;
                             }
                             // Handle WM_HOTKEY for the cycle config hotkey
-                            if message.message == WM_HOTKEY && message.wParam.0 as i32 == CYCLE_HOTKEY_ID {
+                            if message.message == WM_HOTKEY
+                                && message.wParam.0 as i32 == CYCLE_HOTKEY_ID
+                            {
                                 send_ui_action(UiAction::NextConfig);
                                 continue;
                             }
@@ -132,27 +130,21 @@ impl GlobalHooks {
         }
     }
 
-    pub fn update_hotkeys(cycle: &str, profiles: &[(String, String)]) {
+    pub fn update_hotkeys(cycle: &str) {
         let cycle_parsed = Hotkey::parse(cycle).ok();
-        let profiles = profiles
-            .iter()
-            .filter_map(|(name, value)| {
-                Hotkey::parse(value)
-                    .ok()
-                    .map(|hotkey| (name.clone(), hotkey))
-            })
-            .collect();
-        *BINDINGS.write() = HookBindings { cycle: cycle_parsed, profiles };
+        *BINDINGS.write() = HookBindings {
+            cycle: cycle_parsed,
+        };
 
         // Store the cycle hotkey string for RegisterHotKey on the hook thread
         *CYCLE_HOTKEY_STR.lock() = cycle.to_owned();
-        CYCLE_HOTKEY_DIRTY.store(true, Ordering::Release);
 
         // Wake up the hook thread to re-register the hotkey
         let thread_id = HOOK_THREAD_ID.load(Ordering::Acquire);
         if thread_id != 0 {
             unsafe {
-                let _ = PostThreadMessageW(thread_id, WM_REFRESH_CYCLE_HOTKEY, WPARAM(0), LPARAM(0));
+                let _ =
+                    PostThreadMessageW(thread_id, WM_REFRESH_CYCLE_HOTKEY, WPARAM(0), LPARAM(0));
             }
         }
     }
@@ -193,7 +185,7 @@ fn clear_globals() {
     *UI_SENDER.lock() = None;
     *BOUND_WINDOW.lock() = None;
     *STATUS.lock() = None;
-    BINDINGS.write().profiles.clear();
+    *BINDINGS.write() = HookBindings::default();
     PRESSED_KEYS.lock().clear();
     SUPPRESSED_KEYS.lock().clear();
     HOTKEY_FIRED.store(false, Ordering::Relaxed);
@@ -237,23 +229,39 @@ fn handle_keyboard_event(event: &KBDLLHOOKSTRUCT, message: u32) -> bool {
     let is_key_up = message == WM_KEYUP || message == WM_SYSKEYUP;
     let raw_vk = event.vkCode as u16;
     let vk = normalize_vk(raw_vk);
-    let was_suppressed = is_key_up && SUPPRESSED_KEYS.lock().remove(&raw_vk);
-    let is_left_alt = raw_vk == VK_LMENU.0
-        || (raw_vk == VK_MENU.0 && event.scanCode == 0x38 && event.flags.0 & LLKHF_EXTENDED.0 == 0);
+    let was_suppressed = is_key_up && SUPPRESSED_KEYS.lock().remove(&vk);
+    let is_left_alt = is_physical_left_alt(event);
+    let mut suppress_current_event = false;
 
     if is_key_down {
-        let inserted = PRESSED_KEYS.lock().insert(raw_vk);
-        if inserted {
-            if is_left_alt && !LEFT_ALT_DOWN.swap(true, Ordering::Relaxed) {
-                LEFT_ALT_SOLO.store(true, Ordering::Relaxed);
-            } else if LEFT_ALT_DOWN.load(Ordering::Relaxed) {
-                LEFT_ALT_SOLO.store(false, Ordering::Relaxed);
+        let inserted = PRESSED_KEYS.lock().insert(vk);
+
+        // Left-Alt-as-toggle state machine.
+        //
+        // `LEFT_ALT_SOLO` means "Alt was pressed on its own and no other key has
+        // been pressed since". Releasing it in that state toggles running.
+        //
+        // The previous implementation used a 300ms cooldown after each toggle
+        // which silently swallowed every Alt press during that window — that is
+        // exactly why rapid Alt presses stopped working (pressing Alt twice
+        // within 300ms dropped the second press entirely and left the state
+        // machine out of sync). The cooldown is removed; the edge-triggered
+        // solo logic below is sufficient and self-correcting: every clean
+        // press→release of solo Alt fires exactly one toggle.
+        if is_left_alt {
+            if !LEFT_ALT_DOWN.swap(true, Ordering::Relaxed) {
+                // Solo is only possible if no other key is currently held.
+                let others_held = PRESSED_KEYS.lock().iter().any(|&k| k != VK_ALT);
+                LEFT_ALT_SOLO.store(!others_held, Ordering::Relaxed);
             }
+        } else if inserted && LEFT_ALT_DOWN.load(Ordering::Relaxed) {
+            // Any other key while Alt is held cancels the solo gesture.
+            LEFT_ALT_SOLO.store(false, Ordering::Relaxed);
         }
 
         let capture_mode = CAPTURE_MODE.load(Ordering::Acquire);
         if inserted && capture_mode != 0 {
-            SUPPRESSED_KEYS.lock().insert(raw_vk);
+            SUPPRESSED_KEYS.lock().insert(vk);
             LEFT_ALT_SOLO.store(false, Ordering::Relaxed);
             if raw_vk == 0x1B {
                 CAPTURE_MODE.store(0, Ordering::Release);
@@ -264,7 +272,7 @@ fn handle_keyboard_event(event: &KBDLLHOOKSTRUCT, message: u32) -> bool {
                 });
             } else if capture_mode == 1 && !crate::hotkey::is_modifier(vk) {
                 CAPTURE_MODE.store(0, Ordering::Release);
-                send_ui_action(UiAction::CapturedKey(raw_vk));
+                send_ui_action(UiAction::CapturedKey(vk));
             } else if capture_mode == 2 && !crate::hotkey::is_modifier(vk) {
                 let pressed = PRESSED_KEYS.lock().clone();
                 if let Ok(hotkey) = Hotkey::from_keys(pressed) {
@@ -285,7 +293,6 @@ fn handle_keyboard_event(event: &KBDLLHOOKSTRUCT, message: u32) -> bool {
             if handle_registered_hotkey(&pressed) {
                 HOTKEY_FIRED.store(true, Ordering::Relaxed);
                 LEFT_ALT_SOLO.store(false, Ordering::Relaxed);
-                // Suppress all pressed keys so the foreground app doesn't see them
                 let mut suppressed = SUPPRESSED_KEYS.lock();
                 for &vk in PRESSED_KEYS.lock().iter() {
                     suppressed.insert(vk);
@@ -293,25 +300,48 @@ fn handle_keyboard_event(event: &KBDLLHOOKSTRUCT, message: u32) -> bool {
             }
         }
     } else if is_key_up {
-        PRESSED_KEYS.lock().remove(&raw_vk);
-        // Reset HOTKEY_FIRED when a non-modifier key is released (not when ALL keys are released).
-        // This allows re-firing the hotkey when the user holds modifiers and presses
-        // the trigger key again (e.g. Ctrl+Alt held, Space pressed multiple times),
-        // matching the C# version's MOD_NOREPEAT behavior.
+        PRESSED_KEYS.lock().remove(&vk);
         if !is_modifier(vk) || PRESSED_KEYS.lock().is_empty() {
             HOTKEY_FIRED.store(false, Ordering::Relaxed);
         }
 
-        if is_left_alt
-            && LEFT_ALT_DOWN.swap(false, Ordering::Relaxed)
-            && LEFT_ALT_SOLO.swap(false, Ordering::Relaxed)
-        {
-            if let Some(sender) = COMMAND_SENDER.try_lock().and_then(|guard| guard.clone()) {
-                let _ = sender.send(AppCommand::ToggleRunning);
+        if is_left_alt {
+            LEFT_ALT_DOWN.store(false, Ordering::Relaxed);
+            // Edge-triggered toggle: firing on key-up keeps a clean 1:1 mapping
+            // between physical Alt taps and toggles, regardless of press speed.
+            if LEFT_ALT_SOLO.swap(false, Ordering::Relaxed) {
+                if let Some(sender) = COMMAND_SENDER.try_lock().and_then(|guard| guard.clone()) {
+                    let _ = sender.send(AppCommand::ToggleRunning);
+                }
+                // Let Alt combos keep working, but suppress the solo Alt key-up
+                // so it does not focus menu bars in the foreground app.
+                suppress_current_event = true;
             }
         }
     }
-    was_suppressed || CAPTURE_MODE.load(Ordering::Acquire) != 0 || SUPPRESSED_KEYS.lock().contains(&raw_vk)
+
+    was_suppressed
+        || CAPTURE_MODE.load(Ordering::Acquire) != 0
+        || SUPPRESSED_KEYS.lock().contains(&vk)
+        || suppress_current_event
+}
+
+/// Identify a physical Left Alt key event.
+///
+/// Prefers the dedicated `VK_LMENU` (0xA4). Falls back to `VK_MENU` (0x12)
+/// only when the event is not an extended key (extended flag ⇒ Right Alt) and
+/// the scan code matches the Alt scan code 0x38. The scan-code check is a
+/// secondary signal; the extended flag alone is enough to reject Right Alt,
+/// which is what matters for correctness here.
+fn is_physical_left_alt(event: &KBDLLHOOKSTRUCT) -> bool {
+    let vk = event.vkCode as u16;
+    if vk == VK_LMENU.0 {
+        return true;
+    }
+    if vk == VK_MENU.0 {
+        return event.flags.0 & LLKHF_EXTENDED.0 == 0;
+    }
+    false
 }
 
 fn handle_registered_hotkey(pressed: &BTreeSet<u16>) -> bool {
@@ -328,14 +358,6 @@ fn handle_registered_hotkey(pressed: &BTreeSet<u16>) -> bool {
         .is_some_and(|hotkey| hotkey.matches(pressed))
     {
         send_ui_action(UiAction::NextConfig);
-        return true;
-    }
-    if let Some((name, _)) = bindings
-        .profiles
-        .iter()
-        .find(|(_, hotkey)| hotkey.matches(pressed))
-    {
-        send_ui_action(UiAction::LoadConfig(name.clone()));
         return true;
     }
     false
@@ -369,6 +391,28 @@ fn bind_window_under_cursor() {
         let mut point = POINT::default();
         if GetCursorPos(&mut point).is_ok() {
             bind_window_at(point);
+        } else {
+            // Fallback: bind the current foreground window
+            // (useful for games running with higher privileges)
+            let foreground = GetForegroundWindow();
+            if !foreground.0.is_null() {
+                let hwnd = foreground.0 as isize;
+                if !window::is_own_process_window(hwnd) {
+                    if let Some(bound_window) =
+                        BOUND_WINDOW.try_lock().and_then(|guard| guard.clone())
+                    {
+                        *bound_window.write() = Some(hwnd);
+                    }
+                    let title = window::get_window_title(hwnd);
+                    if let Some(status) = STATUS.try_lock().and_then(|guard| guard.clone()) {
+                        *status.write() = if title.is_empty() {
+                            format!("已绑定窗口 {hwnd:#x}")
+                        } else {
+                            format!("已绑定: {title}")
+                        };
+                    }
+                }
+            }
         }
     }
 }
@@ -377,11 +421,26 @@ fn bind_window_at(point: POINT) {
     // SAFETY: WindowFromPoint/GetAncestor return opaque handles that are validated below.
     unsafe {
         let child = WindowFromPoint(point);
-        if child.0.is_null() {
+        let desktop = GetDesktopWindow();
+        let shell = GetShellWindow();
+
+        let target: HWND = if child.0.is_null() || child == desktop || child == shell {
+            // Fallback: use the foreground window if WindowFromPoint returns
+            // null or the desktop/shell window (happens with elevated games like DNF/MapleStory)
+            GetForegroundWindow()
+        } else {
+            let root = GetAncestor(child, GA_ROOT);
+            if root.0.is_null() || root == desktop || root == shell {
+                GetForegroundWindow()
+            } else {
+                root
+            }
+        };
+
+        if target.0.is_null() || target == desktop || target == shell {
             return;
         }
-        let root = GetAncestor(child, GA_ROOT);
-        let target = if root.0.is_null() { child } else { root };
+
         let hwnd = target.0 as isize;
         if window::is_own_process_window(hwnd) {
             return;

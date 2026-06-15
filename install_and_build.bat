@@ -141,12 +141,12 @@ echo ========================================
 echo [成功] 编译完成！
 echo ========================================
 echo.
-echo 产物位置: target\release\autokey.exe
+echo 产物位置: target\release\autokeyrust.exe
 echo.
 
-if exist "target\release\autokey.exe" (
+if exist "target\release\autokeyrust.exe" (
     echo 文件信息:
-    dir target\release\autokey.exe | find "autokey.exe"
+    dir target\release\autokeyrust.exe | find "autokeyrust.exe"
     echo.
     echo [√] 可执行文件已生成
     echo.
@@ -156,11 +156,11 @@ if exist "target\release\autokey.exe" (
 
     echo.
     echo 启动 AutoKey-Rust...
-    start "" "target\release\autokey.exe"
+    start "" "target\release\autokeyrust.exe"
 
     echo.
     echo [提示] 程序已在后台启动
-    echo [提示] 如需再次运行: target\release\autokey.exe
+    echo [提示] 如需再次运行: target\release\autokeyrust.exe
 ) else (
     echo [错误] 未找到编译产物
 )
