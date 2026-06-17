@@ -32,7 +32,6 @@ pub enum AppCommand {
 pub enum UiAction {
     NextConfig,
     CapturedKey(u16),
-    CapturedHotkey(String),
 }
 
 struct AppState {

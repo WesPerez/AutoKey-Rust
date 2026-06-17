@@ -17,7 +17,6 @@ pub const KEY_SLOT_COUNT: usize = 12;
 pub const MIN_DELAY_MS: u32 = 20;
 pub const MAX_DELAY_MS: u32 = 3_600_000;
 pub const DEFAULT_CONFIG_NAME: &str = "默认";
-pub const DEFAULT_CYCLE_HOTKEY: &str = "Ctrl+Alt+Z";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -86,8 +85,6 @@ impl Default for Config {
 pub struct AppPreferences {
     #[serde(alias = "SelectedConfig")]
     pub selected_config: String,
-    #[serde(alias = "CycleConfigHotkey")]
-    pub cycle_config_hotkey: String,
     pub window_x: f32,
     pub window_y: f32,
     pub window_width: f32,
@@ -98,7 +95,6 @@ impl Default for AppPreferences {
     fn default() -> Self {
         Self {
             selected_config: DEFAULT_CONFIG_NAME.to_owned(),
-            cycle_config_hotkey: DEFAULT_CYCLE_HOTKEY.to_owned(),
             window_x: f32::NAN,
             window_y: f32::NAN,
             window_width: 1040.0,
@@ -110,7 +106,6 @@ impl Default for AppPreferences {
 impl AppPreferences {
     pub fn sanitize(&mut self) {
         self.selected_config = sanitize_config_name(&self.selected_config);
-        self.cycle_config_hotkey = self.cycle_config_hotkey.trim().chars().take(64).collect();
         if !self.window_x.is_finite() {
             self.window_x = f32::NAN;
         }
@@ -588,7 +583,6 @@ mod tests {
     fn sanitizes_preferences() {
         let mut preferences = AppPreferences {
             selected_config: " demo? ".to_owned(),
-            cycle_config_hotkey: "  Ctrl+1  ".to_owned(),
             window_x: f32::NAN,
             window_y: f32::NAN,
             window_width: f32::NAN,
@@ -596,18 +590,7 @@ mod tests {
         };
         preferences.sanitize();
         assert_eq!(preferences.selected_config, "demo_");
-        assert_eq!(preferences.cycle_config_hotkey, "Ctrl+1");
         assert_eq!(preferences.window_width, 1040.0);
         assert_eq!(preferences.window_height, 560.0);
-    }
-
-    #[test]
-    fn allows_clearing_cycle_hotkey() {
-        let mut preferences = AppPreferences {
-            cycle_config_hotkey: "   ".to_owned(),
-            ..AppPreferences::default()
-        };
-        preferences.sanitize();
-        assert_eq!(preferences.cycle_config_hotkey, "");
     }
 }

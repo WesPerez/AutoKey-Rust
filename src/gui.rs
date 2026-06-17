@@ -228,11 +228,6 @@ fn setup_visuals(ctx: &egui::Context) {
     ctx.set_style(style);
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum HotkeyCaptureTarget {
-    CycleConfig,
-}
-
 struct ActivationWake {
     stop: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
@@ -349,7 +344,6 @@ pub struct AutoKeyApp {
     show_window_selector: bool,
     available_windows: Vec<WindowInfo>,
     capturing_key: Option<usize>,
-    capturing_hotkey: Option<HotkeyCaptureTarget>,
     tray: Option<TrayController>,
     last_icon_state: Option<(bool, String)>,
     last_saved_config: Config,
@@ -359,6 +353,8 @@ pub struct AutoKeyApp {
     taskbar_hicon: Option<isize>,
     exit_requested: Arc<AtomicBool>,
     _tray_exit_watcher: TrayExitWatcher,
+    alt_solo_pending: bool,
+    alt_was_held: bool,
 }
 
 impl AutoKeyApp {
@@ -414,7 +410,6 @@ impl AutoKeyApp {
             show_window_selector: false,
             available_windows: Vec::new(),
             capturing_key: None,
-            capturing_hotkey: None,
             tray,
             last_icon_state: None,
             last_saved_config,
@@ -424,6 +419,8 @@ impl AutoKeyApp {
             taskbar_hicon: None,
             exit_requested,
             _tray_exit_watcher: tray_exit_watcher,
+            alt_solo_pending: false,
+            alt_was_held: false,
         };
         app.refresh_profiles_and_hotkeys();
         app
@@ -431,9 +428,6 @@ impl AutoKeyApp {
 
     fn refresh_profiles_and_hotkeys(&mut self) {
         self.profile_names = list_config_names().unwrap_or_default();
-        let preferences = self.preferences.read();
-        let cycle = preferences.cycle_config_hotkey.clone();
-        GlobalHooks::update_hotkeys(&cycle);
     }
 
     fn switch_to_next_config(&mut self) {
@@ -564,13 +558,6 @@ impl AutoKeyApp {
                                 key.key_name = key_display_name(vk);
                             }
                         }
-                    }
-                    GlobalHooks::cancel_capture();
-                }
-                UiAction::CapturedHotkey(text) => {
-                    if self.capturing_hotkey.take() == Some(HotkeyCaptureTarget::CycleConfig) {
-                        self.preferences.write().cycle_config_hotkey = text;
-                        self.refresh_profiles_and_hotkeys();
                     }
                     GlobalHooks::cancel_capture();
                 }
@@ -812,7 +799,6 @@ impl AutoKeyApp {
         }
 
         ui.add_space(4.0);
-        ui.label("\u{63d0}\u{793a}: Ctrl+Alt+Space \u{7ed1}\u{5b9a}\u{5149}\u{6807}\u{4e0b}\u{7a97}\u{53e3}\u{ff0c}\u{53f3}\u{952e}\u{62d6}\u{62fd}\u{4e5f}\u{53ef}\u{7ed1}\u{5b9a}");
     }
 
     fn render_profile_settings(&mut self, ui: &mut egui::Ui) {
@@ -900,34 +886,6 @@ impl AutoKeyApp {
         });
 
         ui.add_space(8.0);
-        ui.label("\u{5feb}\u{6377}\u{952e}:");
-
-        let cycle_hotkey = self.preferences.read().cycle_config_hotkey.clone();
-
-        ui.horizontal(|ui| {
-            ui.label("\u{5faa}\u{73af}\u{914d}\u{7f6e}:");
-            let capturing = self.capturing_hotkey == Some(HotkeyCaptureTarget::CycleConfig);
-            let button_text = if capturing {
-                "按下快捷键..."
-            } else if cycle_hotkey.is_empty() {
-                "设置"
-            } else {
-                &cycle_hotkey
-            };
-            if ui.button(button_text).clicked() {
-                if capturing {
-                    self.capturing_hotkey = None;
-                    GlobalHooks::cancel_capture();
-                } else {
-                    self.capturing_hotkey = Some(HotkeyCaptureTarget::CycleConfig);
-                    GlobalHooks::begin_hotkey_capture();
-                }
-            }
-            if !cycle_hotkey.is_empty() && ui.button("\u{6e05}\u{9664}").clicked() {
-                self.preferences.write().cycle_config_hotkey.clear();
-                self.refresh_profiles_and_hotkeys();
-            }
-        });
     }
 
     fn render_key_table(&mut self, ctx: &egui::Context) {
@@ -1168,6 +1126,26 @@ impl eframe::App for AutoKeyApp {
         setup_visuals(ctx);
 
         self.process_ui_actions();
+
+        // Handle Alt toggle when the app is the foreground window.
+        // The hook skips Alt suppression when our window is focused,
+        // so key events reach egui. We detect Alt press → release here
+        // and toggle the engine directly, avoiding the hook's channel-based
+        // toggle which would race with egui's event processing.
+        let alt_now = ctx.input(|i| i.modifiers.alt);
+        let any_key_held = ctx.input(|i| !i.keys_down.is_empty());
+
+        if !self.alt_was_held && alt_now {
+            self.alt_solo_pending = true;
+        }
+        if self.alt_solo_pending && any_key_held {
+            self.alt_solo_pending = false;
+        }
+        if self.alt_solo_pending && !alt_now && self.alt_was_held {
+            let _ = self.command_tx.send(AppCommand::ToggleRunning);
+            self.alt_solo_pending = false;
+        }
+        self.alt_was_held = alt_now;
 
         // Poll tray events for autostart toggle only.
         // Exit and Show events are handled by the TrayExitWatcher background thread,

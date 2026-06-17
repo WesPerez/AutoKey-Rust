@@ -24,7 +24,6 @@ const BG: Rgba = Rgba::rgb(21, 101, 192);
 const WHITE: Rgba = Rgba::rgb(255, 255, 255);
 const ACCENT_RUNNING: Rgba = Rgba::rgb(76, 175, 80);
 const ACCENT_STOPPED: Rgba = Rgba::rgb(211, 47, 47);
-const BADGE_FILL: Rgba = Rgba::rgb(255, 255, 255);
 const BADGE_TEXT: Rgba = Rgba::rgb(21, 101, 192);
 
 /// Render a full 32x32 RGBA buffer for the given state + config name.
@@ -116,59 +115,55 @@ fn fill_aa_circle(buf: &mut [u8], cx: f32, cy: f32, radius: f32, color: Rgba) {
 /// Draw a small filled badge circle with the config text, anchored at the
 /// top-right of the icon. Slightly overlaps the corner so it reads clearly.
 fn draw_badge(buf: &mut [u8], text: &str) {
-    let cx = 24.0f32;
-    let cy = 8.0f32;
+    let cx = 23.0f32;
+    let cy = 9.0f32;
+
     let single = text.chars().count() <= 1;
-    let radius = if single { 7.0 } else { 7.5 };
-
-    fill_aa_circle(buf, cx, cy, radius, BADGE_FILL);
-    fill_aa_circle_edge(buf, cx, cy, radius, 0.75, BG);
-
     let glyph = if single {
         draw_digit(text.chars().next().unwrap_or('0'))
     } else {
         draw_two_chars(text)
     };
 
-    // Stamp glyph centered on the badge.
-    let gw = glyph.width;
-    let gh = glyph.height;
-    let ox = cx as i32 - gw as i32 / 2 - 1; // glyph font is drawn left-padded by 1
-    let oy = cy as i32 - gh as i32 / 2;
-    for gy in 0..gh {
-        for gx in 0..gw {
-            if glyph.pixel(gx, gy) {
-                let px = ox + gx as i32 - 1;
-                let py = oy + gy as i32;
-                if (0..SIZE as i32).contains(&px) && (0..SIZE as i32).contains(&py) {
-                    blend(buf, px as usize, py as usize, BADGE_TEXT, 1.0);
+    // 2× upscale with 3×3 supersampling for anti-aliased edges.
+    let scale = 2;
+    let ss = 3;
+    let ss_total = (ss * ss) as f32;
+    let src_w = glyph.width;
+    let src_h = glyph.height;
+    let out_w = src_w * scale;
+    let out_h = src_h * scale;
+    let ox = cx as i32 - out_w as i32 / 2;
+    let oy = cy as i32 - out_h as i32 / 2;
+
+    for out_y in 0..out_h {
+        for out_x in 0..out_w {
+            let mut coverage = 0.0f32;
+            for sy in 0..ss {
+                for sx in 0..ss {
+                    let src_x =
+                        (out_x as f32 + (sx as f32 + 0.5) / ss as f32) / scale as f32 - 0.5;
+                    let src_y =
+                        (out_y as f32 + (sy as f32 + 0.5) / ss as f32) / scale as f32 - 0.5;
+                    let gx = src_x.round() as i32;
+                    let gy = src_y.round() as i32;
+                    if gx >= 0
+                        && gx < src_w as i32
+                        && gy >= 0
+                        && gy < src_h as i32
+                        && glyph.pixel(gx as usize, gy as usize)
+                    {
+                        coverage += 1.0;
+                    }
                 }
             }
-        }
-    }
-}
-
-/// Draw an anti-aliased ring outline around the badge for contrast.
-fn fill_aa_circle_edge(buf: &mut [u8], cx: f32, cy: f32, radius: f32, width: f32, color: Rgba) {
-    let outer = radius;
-    let inner = (radius - width).max(0.0);
-    let outer2 = outer * outer;
-    let inner2 = inner * inner;
-    for y in 0..SIZE {
-        for x in 0..SIZE {
-            let dx = x as f32 + 0.5 - cx;
-            let dy = y as f32 + 0.5 - cy;
-            let d2 = dx * dx + dy * dy;
-            if d2 <= outer2 && d2 >= inner2 {
-                let dist = d2.sqrt();
-                let cov = if dist < inner + 0.5 {
-                    dist - inner + 0.5
-                } else if dist > outer - 0.5 {
-                    outer - dist + 0.5
-                } else {
-                    1.0
-                };
-                blend(buf, x, y, color, cov.clamp(0.0, 1.0));
+            coverage /= ss_total;
+            if coverage > 0.0 {
+                let px = ox + out_x as i32;
+                let py = oy + out_y as i32;
+                if (0..SIZE as i32).contains(&px) && (0..SIZE as i32).contains(&py) {
+                    blend(buf, px as usize, py as usize, BADGE_TEXT, coverage);
+                }
             }
         }
     }

@@ -1,4 +1,4 @@
-use crate::hotkey::{is_modifier, normalize_vk, Hotkey, VK_ALT, VK_CONTROL};
+use crate::hotkey::{is_modifier, normalize_vk, VK_ALT, VK_CONTROL};
 use crate::{window, AppCommand, UiAction};
 use anyhow::{anyhow, Result};
 use once_cell::sync::Lazy;
@@ -18,14 +18,6 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 const RIGHT_DRAG_THRESHOLD_SQUARED: i64 = 64;
-/// The cycle hotkey string currently configured.
-/// Updated by `update_hotkeys` and read by `handle_registered_hotkey`.
-static CYCLE_HOTKEY_STR: Lazy<Mutex<String>> = Lazy::new(|| Mutex::new(String::new()));
-
-/// Cached parsed cycle hotkey keyset for fast comparison in the keyboard hook.
-/// Updated together with CYCLE_HOTKEY_STR by `update_hotkeys`.
-static CYCLE_HOTKEY_KEYS: Lazy<Mutex<Option<BTreeSet<u16>>>> =
-    Lazy::new(|| Mutex::new(None));
 
 type SharedBoundWindow = Arc<RwLock<Option<isize>>>;
 
@@ -108,26 +100,10 @@ impl GlobalHooks {
         }
     }
 
-    pub fn update_hotkeys(cycle: &str) {
-        *CYCLE_HOTKEY_STR.lock() = cycle.to_owned();
-        let parsed = if cycle.is_empty() {
-            None
-        } else {
-            Hotkey::parse(cycle).ok().map(|h| h.keys)
-        };
-        *CYCLE_HOTKEY_KEYS.lock() = parsed;
-    }
-
     pub fn begin_key_capture() {
         PRESSED_KEYS.lock().clear();
         SUPPRESSED_KEYS.lock().clear();
         CAPTURE_MODE.store(1, Ordering::Release);
-    }
-
-    pub fn begin_hotkey_capture() {
-        PRESSED_KEYS.lock().clear();
-        SUPPRESSED_KEYS.lock().clear();
-        CAPTURE_MODE.store(2, Ordering::Release);
     }
 
     pub fn cancel_capture() {
@@ -154,8 +130,6 @@ fn clear_globals() {
     *UI_SENDER.lock() = None;
     *BOUND_WINDOW.lock() = None;
     *STATUS.lock() = None;
-    *CYCLE_HOTKEY_STR.lock() = String::new();
-    *CYCLE_HOTKEY_KEYS.lock() = None;
     PRESSED_KEYS.lock().clear();
     SUPPRESSED_KEYS.lock().clear();
     HOTKEY_FIRED.store(false, Ordering::Relaxed);
@@ -223,11 +197,11 @@ fn handle_keyboard_event(event: &KBDLLHOOKSTRUCT, message: u32) -> bool {
                 // Solo is only possible if no other key is currently held.
                 let others_held = PRESSED_KEYS.lock().iter().any(|&k| k != VK_ALT);
                 LEFT_ALT_SOLO.store(!others_held, Ordering::Relaxed);
-                // Suppress the Alt key-down when it's potentially solo.
-                // This prevents the foreground app from activating its menu bar
-                // on a clean Alt tap. If the user presses another key while Alt
-                // is held, a synthetic Alt key-down is injected at that point.
-                if LEFT_ALT_SOLO.load(Ordering::Relaxed) {
+                // Suppress the Alt key-down when it's potentially solo and the
+                // foreground window is NOT our own app. When our own window is
+                // focused, let the Alt key through so the app's UI stays
+                // responsive (the toggle still fires via the hook on key-up).
+                if LEFT_ALT_SOLO.load(Ordering::Relaxed) && !is_own_window_focused() {
                     SUPPRESSED_KEYS.lock().insert(vk);
                 }
             }
@@ -259,25 +233,15 @@ fn handle_keyboard_event(event: &KBDLLHOOKSTRUCT, message: u32) -> bool {
         }
 
         let capture_mode = CAPTURE_MODE.load(Ordering::Acquire);
-        if inserted && capture_mode != 0 {
+        if inserted && capture_mode == 1 {
             SUPPRESSED_KEYS.lock().insert(vk);
             LEFT_ALT_SOLO.store(false, Ordering::Relaxed);
             if raw_vk == 0x1B {
                 CAPTURE_MODE.store(0, Ordering::Release);
-                send_ui_action(if capture_mode == 1 {
-                    UiAction::CapturedKey(0)
-                } else {
-                    UiAction::CapturedHotkey(String::new())
-                });
-            } else if capture_mode == 1 && !crate::hotkey::is_modifier(vk) {
+                send_ui_action(UiAction::CapturedKey(0));
+            } else if !crate::hotkey::is_modifier(vk) {
                 CAPTURE_MODE.store(0, Ordering::Release);
                 send_ui_action(UiAction::CapturedKey(vk));
-            } else if capture_mode == 2 && !crate::hotkey::is_modifier(vk) {
-                let pressed = PRESSED_KEYS.lock().clone();
-                if let Ok(hotkey) = Hotkey::from_keys(pressed) {
-                    CAPTURE_MODE.store(0, Ordering::Release);
-                    send_ui_action(UiAction::CapturedHotkey(hotkey.display()));
-                }
             }
             return true;
         }
@@ -332,20 +296,26 @@ fn handle_keyboard_event(event: &KBDLLHOOKSTRUCT, message: u32) -> bool {
             LEFT_ALT_DOWN.store(false, Ordering::Relaxed);
             let was_solo = LEFT_ALT_SOLO.swap(false, Ordering::Relaxed);
             if was_solo {
-                if let Some(sender) = COMMAND_SENDER.try_lock().and_then(|guard| guard.clone()) {
-                    let _ = sender.send(AppCommand::ToggleRunning);
+                // When our own window is the foreground, egui handles the Alt
+                // toggle directly (see gui.rs update()). Skipping the hook-based
+                // toggle here avoids double-toggling.
+                if !is_own_window_focused() {
+                    if let Some(sender) = COMMAND_SENDER.try_lock().and_then(|guard| guard.clone()) {
+                        let _ = sender.send(AppCommand::ToggleRunning);
+                    }
                 }
             }
-            // Inject a synthetic Alt key-up when the real event is being suppressed
-            // or when a synthetic Alt key-down was injected earlier.
-            // This covers both the solo case (key-down was suppressed) and the
-            // non-solo case where the key-down was suppressed but later replayed via
-            // SendInput. Without this, Windows keeps Alt logically held and all
-            // subsequent keys appear as Alt+Key. The injected event carries
-            // LLKHF_INJECTED so the hook ignores it.
+            // When our own window is focused, let the Alt key-up pass through
+            // normally — no suppression and no synthetic injection. The toggle
+            // already fired above, and the app's own UI receives the key event
+            // as usual.
+            //
+            // Exception: if the key-down was suppressed (started in a different
+            // window) or a synthetic key-down was injected, we still need to
+            // inject a synthetic key-up to release the system's Alt state.
             let needs_synthetic_up = was_suppressed
-                || was_solo
-                || ALT_SYNTHETIC_DOWN.swap(false, Ordering::Relaxed);
+                || ALT_SYNTHETIC_DOWN.swap(false, Ordering::Relaxed)
+                || (!is_own_window_focused() && was_solo);
             if needs_synthetic_up {
                 unsafe {
                     let input = INPUT {
@@ -391,24 +361,22 @@ fn is_physical_left_alt(event: &KBDLLHOOKSTRUCT) -> bool {
     false
 }
 
+/// Check whether the foreground window is our own main window.
+/// When true, we skip Alt key suppression so the app's own UI can handle
+/// keyboard events normally (e.g. the start/stop button still works).
+fn is_own_window_focused() -> bool {
+    let Some(own_hwnd) = window::find_own_hwnd() else {
+        return false;
+    };
+    let fg = unsafe { GetForegroundWindow() };
+    !fg.is_invalid() && fg.0 as isize == own_hwnd
+}
+
 fn handle_registered_hotkey(pressed: &BTreeSet<u16>) -> bool {
     let bind_window = BTreeSet::from([VK_CONTROL, VK_ALT, 0x20]);
     if pressed == &bind_window {
         bind_window_under_cursor();
         return true;
-    }
-
-    // Handle cycle config hotkey via keyboard hook instead of RegisterHotKey.
-    // RegisterHotKey intercepts the key combination system-wide, blocking it from
-    // reaching the foreground app (e.g. Ctrl+Z would prevent Undo everywhere).
-    // Handling it here gives us the same suppression behavior but avoids the
-    // system-level lock-in: the hotkey is only active when the hook is installed
-    // and the key combo can be freely reconfigured without OS-level registration.
-    if let Some(hotkey_keys) = CYCLE_HOTKEY_KEYS.lock().as_ref() {
-        if pressed == hotkey_keys {
-            send_ui_action(UiAction::NextConfig);
-            return true;
-        }
     }
 
     false
