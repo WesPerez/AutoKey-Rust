@@ -42,7 +42,7 @@ Write-Host "Step 2: Building AutoKey-Rust" -ForegroundColor Yellow
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host ""
 
-Set-Location "E:\Project\Common\AutoKey-Rust"
+Set-Location $PSScriptRoot
 
 Write-Host "Project directory: $(Get-Location)" -ForegroundColor Gray
 Write-Host "First build takes 8-12 minutes..." -ForegroundColor Yellow

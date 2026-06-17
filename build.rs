@@ -1,22 +1,23 @@
 use std::io::Write;
 use std::path::Path;
 
-fn main() {
-    let out_dir = std::env::var("OUT_DIR").unwrap();
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let out_dir = std::env::var("OUT_DIR")?;
     let ico_path = Path::new(&out_dir).join("app.ico");
 
     // Generate a 32x32 ICO file with sky blue background and red center circle
     if !ico_path.exists() {
-        generate_ico(&ico_path);
+        generate_ico(&ico_path)?;
     }
 
     // Embed the icon into the EXE using winres
     let mut res = winres::WindowsResource::new();
-    res.set_icon(ico_path.to_str().unwrap());
-    res.compile().expect("Failed to compile Windows resource");
+    res.set_icon(ico_path.to_string_lossy().as_ref());
+    res.compile()?;
+    Ok(())
 }
 
-fn generate_ico(path: &Path) {
+fn generate_ico(path: &Path) -> std::io::Result<()> {
     const SIZE: usize = 32;
     let bg_color: [u8; 4] = [21, 101, 192, 255];
     let accent: [u8; 4] = [211, 47, 47, 255];
@@ -63,45 +64,44 @@ fn generate_ico(path: &Path) {
     }
 
     let mut ico = Vec::new();
-    ico.write_all(&0u16.to_le_bytes()).unwrap();
-    ico.write_all(&1u16.to_le_bytes()).unwrap();
-    ico.write_all(&1u16.to_le_bytes()).unwrap();
+    ico.write_all(&0u16.to_le_bytes())?;
+    ico.write_all(&1u16.to_le_bytes())?;
+    ico.write_all(&1u16.to_le_bytes())?;
 
     ico.push(SIZE as u8);
     ico.push(SIZE as u8);
     ico.push(0u8);
     ico.push(0u8);
-    ico.write_all(&1u16.to_le_bytes()).unwrap();
-    ico.write_all(&32u16.to_le_bytes()).unwrap();
+    ico.write_all(&1u16.to_le_bytes())?;
+    ico.write_all(&32u16.to_le_bytes())?;
 
     let bmp_header_size = 40u32;
     let and_mask_row_size = SIZE.div_ceil(32) * 4;
     let and_mask_size = (and_mask_row_size * SIZE) as u32;
     let pixel_data_size = (SIZE * SIZE * 4) as u32;
     let data_size = bmp_header_size + pixel_data_size + and_mask_size;
-    ico.write_all(&data_size.to_le_bytes()).unwrap();
-    ico.write_all(&((6 + 16) as u32).to_le_bytes()).unwrap();
+    ico.write_all(&data_size.to_le_bytes())?;
+    ico.write_all(&((6 + 16) as u32).to_le_bytes())?;
 
-    ico.write_all(&bmp_header_size.to_le_bytes()).unwrap();
-    ico.write_all(&(SIZE as i32).to_le_bytes()).unwrap();
-    ico.write_all(&(SIZE as i32 * 2).to_le_bytes()).unwrap();
-    ico.write_all(&1u16.to_le_bytes()).unwrap();
-    ico.write_all(&32u16.to_le_bytes()).unwrap();
-    ico.write_all(&0u32.to_le_bytes()).unwrap();
-    ico.write_all(&pixel_data_size.to_le_bytes()).unwrap();
-    ico.write_all(&0u32.to_le_bytes()).unwrap();
-    ico.write_all(&0u32.to_le_bytes()).unwrap();
-    ico.write_all(&0u32.to_le_bytes()).unwrap();
-    ico.write_all(&0u32.to_le_bytes()).unwrap();
+    ico.write_all(&bmp_header_size.to_le_bytes())?;
+    ico.write_all(&(SIZE as i32).to_le_bytes())?;
+    ico.write_all(&(SIZE as i32 * 2).to_le_bytes())?;
+    ico.write_all(&1u16.to_le_bytes())?;
+    ico.write_all(&32u16.to_le_bytes())?;
+    ico.write_all(&0u32.to_le_bytes())?;
+    ico.write_all(&pixel_data_size.to_le_bytes())?;
+    ico.write_all(&0u32.to_le_bytes())?;
+    ico.write_all(&0u32.to_le_bytes())?;
+    ico.write_all(&0u32.to_le_bytes())?;
+    ico.write_all(&0u32.to_le_bytes())?;
 
     for y in (0..SIZE).rev() {
         let row_start = y * SIZE * 4;
-        ico.write_all(&bgra[row_start..row_start + SIZE * 4])
-            .unwrap();
+        ico.write_all(&bgra[row_start..row_start + SIZE * 4])?;
     }
 
     let and_mask = vec![0u8; and_mask_size as usize];
-    ico.write_all(&and_mask).unwrap();
+    ico.write_all(&and_mask)?;
 
-    std::fs::write(path, ico).expect("Failed to write ICO file");
+    std::fs::write(path, ico)
 }

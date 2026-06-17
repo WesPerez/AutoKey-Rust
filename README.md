@@ -13,7 +13,7 @@ AutoKey-Rust 是一个 Windows 桌面按键调度工具，使用 Rust、egui 和
 - `Ctrl+Alt+Space` 绑定鼠标所在窗口
 - 按住鼠标右键拖动超过 8 像素后绑定目标窗口
 - 多配置保存、加载、删除、循环切换
-- 每个配置独立热键，以及全局“下一个配置”热键
+- 可配置全局“下一个配置”热键
 - 系统托盘、开机启动、最小化/关闭到托盘
 - 单实例运行；再次启动会唤醒已有窗口
 - 自动保存、错误日志和旧 C# 配置迁移
@@ -51,7 +51,7 @@ target\release\autokeyrust.exe
 4. 点击“启动”，或单独按下左 Alt。
 5. 如需后台窗口消息，使用窗口列表、`Ctrl+Alt+Space` 或右键拖动进行绑定。
 
-配置热键可直接输入，也可点击“捕获”。格式示例：
+“下一个配置”热键可点击“捕获”设置，也可清除停用。内部保存格式示例：
 
 ```text
 Ctrl+Z
@@ -71,6 +71,8 @@ Win+VK186
 首次运行会尝试迁移：
 
 ```text
+%APPDATA%\KeyScheduler\configs\*.json
+%APPDATA%\KeyScheduler\app-state.json
 %APPDATA%\AutoKey\configs\*.json
 %APPDATA%\AutoKey\app-state.json
 ```
@@ -82,3 +84,5 @@ Win+VK186
 项目不实现也不承诺绕过反作弊、安全检测、API 监控、权限边界或目标软件规则。Windows 和目标程序仍可能识别合成输入。请只在获得授权且符合软件条款的自动化场景中使用。
 
 后台 `PostMessage` 是否有效由目标程序的消息处理方式决定；管理员权限程序通常要求本程序也以同等权限运行。
+
+检测相关承诺与当前实现的逐项核查见 [DETECTION_AUDIT.md](DETECTION_AUDIT.md)。

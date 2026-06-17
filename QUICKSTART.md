@@ -1,7 +1,7 @@
 # 快速开始
 
 ```powershell
-cd E:\Project\Common\AutoKey-Rust
+cd path\to\AutoKey-Rust
 cargo build --release
 .\target\release\autokeyrust.exe
 ```

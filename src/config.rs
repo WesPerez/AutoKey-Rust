@@ -17,7 +17,7 @@ pub const KEY_SLOT_COUNT: usize = 12;
 pub const MIN_DELAY_MS: u32 = 20;
 pub const MAX_DELAY_MS: u32 = 3_600_000;
 pub const DEFAULT_CONFIG_NAME: &str = "默认";
-pub const DEFAULT_CYCLE_HOTKEY: &str = "Ctrl+Z";
+pub const DEFAULT_CYCLE_HOTKEY: &str = "Ctrl+Alt+Z";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]

@@ -6,12 +6,11 @@ use std::sync::atomic::{AtomicU8, Ordering};
 const MINIMUM_DELAY: u32 = 20;
 const FATIGUE_THRESHOLD: u32 = 12;
 
-// ── Markov chain for delay correlation ──────────────────────────────
+// ── Delay correlation model ─────────────────────────────────────────
 // Discretizes delay values into NUM_STATES buckets and uses a first-order
 // Markov chain to create correlation between consecutive delays.
-// This makes the delay sequence look more human-like: real typists tend
-// to have correlated delays (slow periods → slow, fast periods → fast)
-// rather than fully independent random values.
+// This keeps timing variation from becoming fully independent white noise,
+// while staying inside the configured bounds.
 
 const NUM_STATES: usize = 8;
 
@@ -365,11 +364,11 @@ mod tests {
             }
         }
 
-        // With Markov chain, correlation should be > 50% (random would be ~50%)
+        // Correlated timing should stay above pure independent jitter.
         let correlation_ratio = correlated as f64 / total as f64;
         assert!(
             correlation_ratio > 0.50,
-            "Markov chain should produce correlated delays, got ratio {correlation_ratio:.2}"
+            "delay correlation ratio should be > 0.50, got {correlation_ratio:.2}"
         );
     }
 }

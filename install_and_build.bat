@@ -105,7 +105,7 @@ REM 步骤5: 编译项目
 echo [5/5] 编译AutoKey-Rust项目...
 echo.
 
-cd /d E:\Project\Common\AutoKey-Rust
+cd /d "%~dp0"
 
 if not exist "Cargo.toml" (
     echo [错误] 未找到项目文件 Cargo.toml

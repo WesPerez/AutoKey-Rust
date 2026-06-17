@@ -302,6 +302,10 @@ impl TrayExitWatcher {
                         let id_str = event.id.as_ref();
                         if id_str == "exit" {
                             exit_requested.store(true, Ordering::Release);
+                            // Must restore window first — when hidden (SW_HIDE),
+                            // eframe stops its event loop and update() never runs,
+                            // so close_requested() is never checked.
+                            crate::window::restore_own_main_window();
                             let _ = crate::window::request_own_main_window_close();
                             egui_ctx.request_repaint();
                         } else if id_str == "show" {

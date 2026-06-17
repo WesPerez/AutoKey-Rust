@@ -73,7 +73,7 @@ if ($cargoPath) {
 Write-Host "[5/5] 编译AutoKey-Rust项目..." -ForegroundColor Yellow
 Write-Host ""
 
-Set-Location "E:\Project\Common\AutoKey-Rust"
+Set-Location $PSScriptRoot
 
 if (-not (Test-Path "Cargo.toml")) {
     Write-Host "[错误] 未找到项目文件 Cargo.toml" -ForegroundColor Red

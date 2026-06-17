@@ -4,7 +4,7 @@ echo 快速编译脚本（假设Rust已安装）
 echo ========================================
 echo.
 
-cd /d "E:\Project\Common\AutoKey-Rust"
+cd /d "%~dp0"
 
 if not exist "Cargo.toml" (
     echo [错误] 未找到 Cargo.toml

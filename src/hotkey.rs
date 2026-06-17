@@ -52,10 +52,6 @@ impl Hotkey {
             .collect::<Vec<_>>()
             .join("+")
     }
-
-    pub fn matches(&self, pressed: &BTreeSet<u16>) -> bool {
-        &self.keys == pressed
-    }
 }
 
 pub fn normalize_vk(vk: u16) -> u16 {

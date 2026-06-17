@@ -1,31 +1,31 @@
-use crate::hotkey::{is_modifier, normalize_vk, Hotkey, VK_ALT, VK_CONTROL, VK_SHIFT, VK_WIN};
+use crate::hotkey::{is_modifier, normalize_vk, Hotkey, VK_ALT, VK_CONTROL};
 use crate::{window, AppCommand, UiAction};
 use anyhow::{anyhow, Result};
 use once_cell::sync::Lazy;
 use parking_lot::{Mutex, RwLock};
 use std::collections::BTreeSet;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use windows::Win32::Foundation::*;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::GetCurrentThreadId;
-use windows::Win32::UI::Input::KeyboardAndMouse::{VK_LMENU, VK_MENU};
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, VIRTUAL_KEY, VK_LMENU, VK_MENU, INPUT, INPUT_0,
+    INPUT_KEYBOARD, KEYBDINPUT, SendInput,
+};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 const RIGHT_DRAG_THRESHOLD_SQUARED: i64 = 64;
-const CYCLE_HOTKEY_ID: i32 = 1;
-
-/// The cycle hotkey string currently registered via RegisterHotKey.
-/// Updated by `update_hotkeys` and read by the hook thread.
+/// The cycle hotkey string currently configured.
+/// Updated by `update_hotkeys` and read by `handle_registered_hotkey`.
 static CYCLE_HOTKEY_STR: Lazy<Mutex<String>> = Lazy::new(|| Mutex::new(String::new()));
 
-/// The thread ID of the hook thread, used to post wake-up messages.
-static HOOK_THREAD_ID: AtomicU32 = AtomicU32::new(0);
-
-/// Custom message to wake up the hook thread for hotkey re-registration.
-const WM_REFRESH_CYCLE_HOTKEY: u32 = WM_USER + 100;
+/// Cached parsed cycle hotkey keyset for fast comparison in the keyboard hook.
+/// Updated together with CYCLE_HOTKEY_STR by `update_hotkeys`.
+static CYCLE_HOTKEY_KEYS: Lazy<Mutex<Option<BTreeSet<u16>>>> =
+    Lazy::new(|| Mutex::new(None));
 
 type SharedBoundWindow = Arc<RwLock<Option<isize>>>;
 
@@ -40,6 +40,7 @@ static LEFT_ALT_DOWN: AtomicBool = AtomicBool::new(false);
 static LEFT_ALT_SOLO: AtomicBool = AtomicBool::new(false);
 static RIGHT_DRAGGING: AtomicBool = AtomicBool::new(false);
 static RIGHT_DRAG_START: Lazy<Mutex<(i32, i32)>> = Lazy::new(|| Mutex::new((0, 0)));
+static ALT_SYNTHETIC_DOWN: AtomicBool = AtomicBool::new(false);
 static CAPTURE_MODE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 
 pub struct GlobalHooks {
@@ -74,32 +75,15 @@ impl GlobalHooks {
                 if let Ok((_, keyboard, mouse)) = result {
                     // SAFETY: Both hooks and the message queue belong to this thread.
                     unsafe {
-                        // Register the cycle hotkey through the thread message loop.
-                        register_cycle_hotkey_on_thread();
-
                         let mut message = MSG::default();
                         loop {
                             let result = GetMessageW(&mut message, None, 0, 0).0;
                             if result <= 0 {
                                 break;
                             }
-                            // Handle WM_HOTKEY for the cycle config hotkey
-                            if message.message == WM_HOTKEY
-                                && message.wParam.0 as i32 == CYCLE_HOTKEY_ID
-                            {
-                                send_ui_action(UiAction::NextConfig);
-                                continue;
-                            }
-                            // Handle request to re-register the cycle hotkey
-                            if message.message == WM_REFRESH_CYCLE_HOTKEY {
-                                unregister_cycle_hotkey_on_thread();
-                                register_cycle_hotkey_on_thread();
-                                continue;
-                            }
                             let _ = TranslateMessage(&message);
                             DispatchMessageW(&message);
                         }
-                        unregister_cycle_hotkey_on_thread();
                         let _ = UnhookWindowsHookEx(mouse);
                         let _ = UnhookWindowsHookEx(keyboard);
                     }
@@ -126,14 +110,12 @@ impl GlobalHooks {
 
     pub fn update_hotkeys(cycle: &str) {
         *CYCLE_HOTKEY_STR.lock() = cycle.to_owned();
-
-        let thread_id = HOOK_THREAD_ID.load(Ordering::Acquire);
-        if thread_id != 0 {
-            unsafe {
-                let _ =
-                    PostThreadMessageW(thread_id, WM_REFRESH_CYCLE_HOTKEY, WPARAM(0), LPARAM(0));
-            }
-        }
+        let parsed = if cycle.is_empty() {
+            None
+        } else {
+            Hotkey::parse(cycle).ok().map(|h| h.keys)
+        };
+        *CYCLE_HOTKEY_KEYS.lock() = parsed;
     }
 
     pub fn begin_key_capture() {
@@ -173,21 +155,21 @@ fn clear_globals() {
     *BOUND_WINDOW.lock() = None;
     *STATUS.lock() = None;
     *CYCLE_HOTKEY_STR.lock() = String::new();
+    *CYCLE_HOTKEY_KEYS.lock() = None;
     PRESSED_KEYS.lock().clear();
     SUPPRESSED_KEYS.lock().clear();
     HOTKEY_FIRED.store(false, Ordering::Relaxed);
     LEFT_ALT_DOWN.store(false, Ordering::Relaxed);
     LEFT_ALT_SOLO.store(false, Ordering::Relaxed);
+    ALT_SYNTHETIC_DOWN.store(false, Ordering::Relaxed);
     RIGHT_DRAGGING.store(false, Ordering::Relaxed);
     CAPTURE_MODE.store(0, Ordering::Relaxed);
-    HOOK_THREAD_ID.store(0, Ordering::Relaxed);
 }
 
 fn install_hooks() -> Result<(u32, HHOOK, HHOOK)> {
     // SAFETY: Both callbacks have the system ABI and remain valid for the hook lifetime.
     unsafe {
         let thread_id = GetCurrentThreadId();
-        HOOK_THREAD_ID.store(thread_id, Ordering::Release);
         let mut message = MSG::default();
         let _ = PeekMessageW(&mut message, None, 0, 0, PM_NOREMOVE);
         let module = GetModuleHandleW(None)?;
@@ -241,10 +223,39 @@ fn handle_keyboard_event(event: &KBDLLHOOKSTRUCT, message: u32) -> bool {
                 // Solo is only possible if no other key is currently held.
                 let others_held = PRESSED_KEYS.lock().iter().any(|&k| k != VK_ALT);
                 LEFT_ALT_SOLO.store(!others_held, Ordering::Relaxed);
+                // Suppress the Alt key-down when it's potentially solo.
+                // This prevents the foreground app from activating its menu bar
+                // on a clean Alt tap. If the user presses another key while Alt
+                // is held, a synthetic Alt key-down is injected at that point.
+                if LEFT_ALT_SOLO.load(Ordering::Relaxed) {
+                    SUPPRESSED_KEYS.lock().insert(vk);
+                }
             }
         } else if inserted && LEFT_ALT_DOWN.load(Ordering::Relaxed) {
             // Any other key while Alt is held cancels the solo gesture.
             LEFT_ALT_SOLO.store(false, Ordering::Relaxed);
+            // If the Alt key-down was suppressed as a potential solo gesture,
+            // replay it exactly once so the foreground app sees the Alt+Key
+            // combination. Remove from SUPPRESSED_KEYS after injection to
+            // prevent duplicate injections on subsequent keys.
+            if SUPPRESSED_KEYS.lock().remove(&VK_ALT) {
+                ALT_SYNTHETIC_DOWN.store(true, Ordering::Relaxed);
+                unsafe {
+                    let input = INPUT {
+                        r#type: INPUT_KEYBOARD,
+                        Anonymous: INPUT_0 {
+                            ki: KEYBDINPUT {
+                                wVk: VK_MENU,
+                                wScan: 0,
+                                dwFlags: KEYBD_EVENT_FLAGS(0),
+                                time: 0,
+                                dwExtraInfo: 0,
+                            },
+                        },
+                    };
+                    let _ = SendInput(&[input], std::mem::size_of::<INPUT>() as i32);
+                }
+            }
         }
 
         let capture_mode = CAPTURE_MODE.load(Ordering::Acquire);
@@ -293,16 +304,64 @@ fn handle_keyboard_event(event: &KBDLLHOOKSTRUCT, message: u32) -> bool {
             HOTKEY_FIRED.store(false, Ordering::Relaxed);
         }
 
+        // When a suppressed modifier key (Ctrl, Shift, Win — but not Alt) is
+        // released, the key-down already passed through to the system but the
+        // key-up is suppressed here. Inject a synthetic key-up so the system
+        // releases the modifier state and the key doesn't get "stuck" (requiring
+        // a manual press to clear). Alt is handled separately below with its own
+        // synthetic injection logic.
+        if was_suppressed && is_modifier(vk) && !is_left_alt {
+            unsafe {
+                let input = INPUT {
+                    r#type: INPUT_KEYBOARD,
+                    Anonymous: INPUT_0 {
+                        ki: KEYBDINPUT {
+                            wVk: VIRTUAL_KEY(vk),
+                            wScan: 0,
+                            dwFlags: KEYEVENTF_KEYUP,
+                            time: 0,
+                            dwExtraInfo: 0,
+                        },
+                    },
+                };
+                let _ = SendInput(&[input], std::mem::size_of::<INPUT>() as i32);
+            }
+        }
+
         if is_left_alt {
             LEFT_ALT_DOWN.store(false, Ordering::Relaxed);
-            // Edge-triggered toggle: firing on key-up keeps a clean 1:1 mapping
-            // between physical Alt taps and toggles, regardless of press speed.
-            if LEFT_ALT_SOLO.swap(false, Ordering::Relaxed) {
+            let was_solo = LEFT_ALT_SOLO.swap(false, Ordering::Relaxed);
+            if was_solo {
                 if let Some(sender) = COMMAND_SENDER.try_lock().and_then(|guard| guard.clone()) {
                     let _ = sender.send(AppCommand::ToggleRunning);
                 }
-                // Let Alt combos keep working, but suppress the solo Alt key-up
-                // so it does not focus menu bars in the foreground app.
+            }
+            // Inject a synthetic Alt key-up when the real event is being suppressed
+            // or when a synthetic Alt key-down was injected earlier.
+            // This covers both the solo case (key-down was suppressed) and the
+            // non-solo case where the key-down was suppressed but later replayed via
+            // SendInput. Without this, Windows keeps Alt logically held and all
+            // subsequent keys appear as Alt+Key. The injected event carries
+            // LLKHF_INJECTED so the hook ignores it.
+            let needs_synthetic_up = was_suppressed
+                || was_solo
+                || ALT_SYNTHETIC_DOWN.swap(false, Ordering::Relaxed);
+            if needs_synthetic_up {
+                unsafe {
+                    let input = INPUT {
+                        r#type: INPUT_KEYBOARD,
+                        Anonymous: INPUT_0 {
+                            ki: KEYBDINPUT {
+                                wVk: VK_MENU,
+                                wScan: 0,
+                                dwFlags: KEYEVENTF_KEYUP,
+                                time: 0,
+                                dwExtraInfo: 0,
+                            },
+                        },
+                    };
+                    let _ = SendInput(&[input], std::mem::size_of::<INPUT>() as i32);
+                }
                 suppress_current_event = true;
             }
         }
@@ -337,6 +396,19 @@ fn handle_registered_hotkey(pressed: &BTreeSet<u16>) -> bool {
     if pressed == &bind_window {
         bind_window_under_cursor();
         return true;
+    }
+
+    // Handle cycle config hotkey via keyboard hook instead of RegisterHotKey.
+    // RegisterHotKey intercepts the key combination system-wide, blocking it from
+    // reaching the foreground app (e.g. Ctrl+Z would prevent Undo everywhere).
+    // Handling it here gives us the same suppression behavior but avoids the
+    // system-level lock-in: the hotkey is only active when the hook is installed
+    // and the key combo can be freely reconfigured without OS-level registration.
+    if let Some(hotkey_keys) = CYCLE_HOTKEY_KEYS.lock().as_ref() {
+        if pressed == hotkey_keys {
+            send_ui_action(UiAction::NextConfig);
+            return true;
+        }
     }
 
     false
@@ -443,48 +515,4 @@ fn send_ui_action(action: UiAction) {
     if let Some(sender) = UI_SENDER.try_lock().and_then(|guard| guard.clone()) {
         let _ = sender.send(action);
     }
-}
-
-/// Register the cycle hotkey using RegisterHotKey on the current thread.
-/// Must be called from the hook thread (which owns the message loop).
-unsafe fn register_cycle_hotkey_on_thread() {
-    let hotkey_str = CYCLE_HOTKEY_STR.lock().clone();
-    if hotkey_str.is_empty() {
-        return;
-    }
-    let Ok(hotkey) = Hotkey::parse(&hotkey_str) else {
-        return;
-    };
-
-    let mut mod_flags: u32 = 0;
-    let mut vk_code: u32 = 0;
-    for &key in &hotkey.keys {
-        match key {
-            VK_CONTROL => mod_flags |= 0x0002, // MOD_CONTROL
-            VK_ALT => mod_flags |= 0x0001,     // MOD_ALT
-            VK_SHIFT => mod_flags |= 0x0004,   // MOD_SHIFT
-            VK_WIN => mod_flags |= 0x0008,     // MOD_WIN
-            k => vk_code = k as u32,
-        }
-    }
-    if vk_code == 0 {
-        return;
-    }
-    // MOD_NOREPEAT = 0x4000 — prevents repeated WM_HOTKEY when key is held
-    mod_flags |= 0x4000;
-
-    #[link(name = "user32")]
-    extern "system" {
-        fn RegisterHotKey(hwnd: isize, id: i32, fsModifiers: u32, vk: u32) -> i32;
-    }
-    RegisterHotKey(0, CYCLE_HOTKEY_ID, mod_flags, vk_code);
-}
-
-/// Unregister the cycle hotkey. Must be called from the hook thread.
-unsafe fn unregister_cycle_hotkey_on_thread() {
-    #[link(name = "user32")]
-    extern "system" {
-        fn UnregisterHotKey(hwnd: isize, id: i32) -> i32;
-    }
-    UnregisterHotKey(0, CYCLE_HOTKEY_ID);
 }

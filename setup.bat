@@ -91,11 +91,11 @@ REM Step 5: Build project
 echo [Step 5/5] Building AutoKey-Rust...
 echo.
 
-cd /d "E:\Project\Common\AutoKey-Rust"
+cd /d "%~dp0"
 
 if not exist "Cargo.toml" (
     echo [ERROR] Cargo.toml not found
-    echo Expected: E:\Project\Common\AutoKey-Rust\Cargo.toml
+    echo Expected: %CD%\Cargo.toml
     echo Current dir: %CD%
     echo.
     goto END
