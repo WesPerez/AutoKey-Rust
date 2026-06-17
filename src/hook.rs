@@ -12,8 +12,8 @@ use windows::Win32::Foundation::*;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, VIRTUAL_KEY, VK_LMENU, VK_MENU, INPUT, INPUT_0,
-    INPUT_KEYBOARD, KEYBDINPUT, SendInput,
+    SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP,
+    VIRTUAL_KEY, VK_LMENU, VK_MENU,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -34,6 +34,11 @@ static RIGHT_DRAGGING: AtomicBool = AtomicBool::new(false);
 static RIGHT_DRAG_START: Lazy<Mutex<(i32, i32)>> = Lazy::new(|| Mutex::new((0, 0)));
 static ALT_SYNTHETIC_DOWN: AtomicBool = AtomicBool::new(false);
 static CAPTURE_MODE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// Set by the keyboard hook when Ctrl+Z is pressed. The GUI polls this flag
+/// and calls switch_to_next_config(). Using an AtomicBool avoids the channel /
+/// try_lock race that can silently drop the NextConfig action.
+pub static NEXT_CONFIG_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 pub struct GlobalHooks {
     thread_id: u32,
@@ -185,22 +190,23 @@ fn handle_keyboard_event(event: &KBDLLHOOKSTRUCT, message: u32) -> bool {
         // `LEFT_ALT_SOLO` means "Alt was pressed on its own and no other key has
         // been pressed since". Releasing it in that state toggles running.
         //
-        // The previous implementation used a 300ms cooldown after each toggle
-        // which silently swallowed every Alt press during that window — that is
-        // exactly why rapid Alt presses stopped working (pressing Alt twice
-        // within 300ms dropped the second press entirely and left the state
-        // machine out of sync). The cooldown is removed; the edge-triggered
-        // solo logic below is sufficient and self-correcting: every clean
-        // press→release of solo Alt fires exactly one toggle.
+        // The toggle is ALWAYS fired from this hook — it is the single source of
+        // truth — so it works whether the foreground window is our app or any
+        // other window. (The previous implementation skipped the hook toggle when
+        // our own window was focused and relied on a broken egui-based detector,
+        // which never fired because egui reports Alt itself as a held key.)
+        //
+        // When our own window is the foreground we let the Alt key through
+        // untouched (no suppression, no synthetic injection): the toggle still
+        // fires from the key-up branch below, and the app's UI sees Alt normally.
         if is_left_alt {
             if !LEFT_ALT_DOWN.swap(true, Ordering::Relaxed) {
                 // Solo is only possible if no other key is currently held.
                 let others_held = PRESSED_KEYS.lock().iter().any(|&k| k != VK_ALT);
                 LEFT_ALT_SOLO.store(!others_held, Ordering::Relaxed);
-                // Suppress the Alt key-down when it's potentially solo and the
-                // foreground window is NOT our own app. When our own window is
-                // focused, let the Alt key through so the app's UI stays
-                // responsive (the toggle still fires via the hook on key-up).
+                // Suppress the Alt key-down only when it's potentially solo and
+                // the foreground window is NOT our own app. When our window is
+                // focused we let Alt through so the UI stays responsive.
                 if LEFT_ALT_SOLO.load(Ordering::Relaxed) && !is_own_window_focused() {
                     SUPPRESSED_KEYS.lock().insert(vk);
                 }
@@ -210,9 +216,9 @@ fn handle_keyboard_event(event: &KBDLLHOOKSTRUCT, message: u32) -> bool {
             LEFT_ALT_SOLO.store(false, Ordering::Relaxed);
             // If the Alt key-down was suppressed as a potential solo gesture,
             // replay it exactly once so the foreground app sees the Alt+Key
-            // combination. Remove from SUPPRESSED_KEYS after injection to
-            // prevent duplicate injections on subsequent keys.
-            if SUPPRESSED_KEYS.lock().remove(&VK_ALT) {
+            // combination. Skip this when our own window has focus (Alt was
+            // never suppressed there).
+            if !is_own_window_focused() && SUPPRESSED_KEYS.lock().remove(&VK_ALT) {
                 ALT_SYNTHETIC_DOWN.store(true, Ordering::Relaxed);
                 unsafe {
                     let input = INPUT {
@@ -296,26 +302,21 @@ fn handle_keyboard_event(event: &KBDLLHOOKSTRUCT, message: u32) -> bool {
             LEFT_ALT_DOWN.store(false, Ordering::Relaxed);
             let was_solo = LEFT_ALT_SOLO.swap(false, Ordering::Relaxed);
             if was_solo {
-                // When our own window is the foreground, egui handles the Alt
-                // toggle directly (see gui.rs update()). Skipping the hook-based
-                // toggle here avoids double-toggling.
-                if !is_own_window_focused() {
-                    if let Some(sender) = COMMAND_SENDER.try_lock().and_then(|guard| guard.clone()) {
-                        let _ = sender.send(AppCommand::ToggleRunning);
-                    }
+                // Single source of truth: always fire the toggle from the hook,
+                // regardless of which window has focus. This fixes the case
+                // where the foreground window is our own app (the previous code
+                // skipped the toggle here and relied on a broken egui detector).
+                if let Some(sender) = COMMAND_SENDER.try_lock().and_then(|guard| guard.clone()) {
+                    let _ = sender.send(AppCommand::ToggleRunning);
                 }
             }
-            // When our own window is focused, let the Alt key-up pass through
-            // normally — no suppression and no synthetic injection. The toggle
-            // already fired above, and the app's own UI receives the key event
-            // as usual.
-            //
-            // Exception: if the key-down was suppressed (started in a different
-            // window) or a synthetic key-down was injected, we still need to
-            // inject a synthetic key-up to release the system's Alt state.
-            let needs_synthetic_up = was_suppressed
-                || ALT_SYNTHETIC_DOWN.swap(false, Ordering::Relaxed)
-                || (!is_own_window_focused() && was_solo);
+            // When our own window is focused, the Alt key-down was NOT
+            // suppressed, so the key-up must pass through normally too — no
+            // synthetic injection and no suppression. The toggle already fired
+            // above. Only inject a synthetic key-up when we actually suppressed
+            // the real key-down (started outside our window).
+            let needs_synthetic_up =
+                was_suppressed || ALT_SYNTHETIC_DOWN.swap(false, Ordering::Relaxed);
             if needs_synthetic_up {
                 unsafe {
                     let input = INPUT {
@@ -376,6 +377,15 @@ fn handle_registered_hotkey(pressed: &BTreeSet<u16>) -> bool {
     let bind_window = BTreeSet::from([VK_CONTROL, VK_ALT, 0x20]);
     if pressed == &bind_window {
         bind_window_under_cursor();
+        return true;
+    }
+
+    // Ctrl+Z: cycle to the next config profile.
+    // Uses an AtomicBool flag instead of the UI channel because
+    // send_ui_action's try_lock can silently drop the action.
+    let next_config = BTreeSet::from([VK_CONTROL, 0x5A]); // 0x5A = 'Z'
+    if pressed == &next_config {
+        NEXT_CONFIG_REQUESTED.store(true, Ordering::Release);
         return true;
     }
 

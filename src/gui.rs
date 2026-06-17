@@ -2,7 +2,7 @@ use crate::config::{
     delete_named_config, list_config_names, load_into, save_named_config, AppPreferences, Config,
     DEFAULT_CONFIG_NAME, KEY_SLOT_COUNT, MAX_DELAY_MS, MIN_DELAY_MS,
 };
-use crate::hook::GlobalHooks;
+use crate::hook::{GlobalHooks, NEXT_CONFIG_REQUESTED};
 use crate::hotkey::key_display_name;
 use crate::single_instance::SingleInstance;
 use crate::tray::TrayController;
@@ -353,8 +353,6 @@ pub struct AutoKeyApp {
     taskbar_hicon: Option<isize>,
     exit_requested: Arc<AtomicBool>,
     _tray_exit_watcher: TrayExitWatcher,
-    alt_solo_pending: bool,
-    alt_was_held: bool,
 }
 
 impl AutoKeyApp {
@@ -419,8 +417,6 @@ impl AutoKeyApp {
             taskbar_hicon: None,
             exit_requested,
             _tray_exit_watcher: tray_exit_watcher,
-            alt_solo_pending: false,
-            alt_was_held: false,
         };
         app.refresh_profiles_and_hotkeys();
         app
@@ -1126,26 +1122,15 @@ impl eframe::App for AutoKeyApp {
         setup_visuals(ctx);
 
         self.process_ui_actions();
+        if NEXT_CONFIG_REQUESTED.swap(false, Ordering::Acquire) {
+            self.switch_to_next_config();
+        }
 
-        // Handle Alt toggle when the app is the foreground window.
-        // The hook skips Alt suppression when our window is focused,
-        // so key events reach egui. We detect Alt press → release here
-        // and toggle the engine directly, avoiding the hook's channel-based
-        // toggle which would race with egui's event processing.
-        let alt_now = ctx.input(|i| i.modifiers.alt);
-        let any_key_held = ctx.input(|i| !i.keys_down.is_empty());
-
-        if !self.alt_was_held && alt_now {
-            self.alt_solo_pending = true;
-        }
-        if self.alt_solo_pending && any_key_held {
-            self.alt_solo_pending = false;
-        }
-        if self.alt_solo_pending && !alt_now && self.alt_was_held {
-            let _ = self.command_tx.send(AppCommand::ToggleRunning);
-            self.alt_solo_pending = false;
-        }
-        self.alt_was_held = alt_now;
+        // Left-Alt toggle is handled entirely by the low-level keyboard hook
+        // (hook.rs), which fires AppCommand::ToggleRunning on a clean solo
+        // Alt press→release regardless of which window has focus. The previous
+        // egui-based detector here never fired because egui reports Alt itself
+        // as a held key, so it has been removed.
 
         // Poll tray events for autostart toggle only.
         // Exit and Show events are handled by the TrayExitWatcher background thread,

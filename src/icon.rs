@@ -47,7 +47,7 @@ pub fn render_icon_rgba(is_running: bool, config_name: &str) -> Vec<u8> {
 
     // 3) Config badge in the top-right corner (skip if empty).
     if !badge.is_empty() {
-        draw_badge(&mut buf, &badge);
+        draw_badge(&mut buf, &badge, accent);
     }
 
     buf
@@ -112,11 +112,18 @@ fn fill_aa_circle(buf: &mut [u8], cx: f32, cy: f32, radius: f32, color: Rgba) {
     }
 }
 
-/// Draw a small filled badge circle with the config text, anchored at the
-/// top-right of the icon. Slightly overlaps the corner so it reads clearly.
-fn draw_badge(buf: &mut [u8], text: &str) {
+/// Draw a small filled badge disc anchored at the top-right of the icon, with
+/// the config number rendered on top. The disc is white with a colored ring
+/// matching the running/stopped accent so the number stays readable against
+/// any background.
+fn draw_badge(buf: &mut [u8], text: &str, accent: Rgba) {
     let cx = 23.0f32;
     let cy = 9.0f32;
+
+    // 1) Colored accent ring (sits behind the white disc).
+    fill_aa_circle(buf, cx, cy, 6.5, accent);
+    // 2) White disc on top, leaving a 1.5px ring visible.
+    fill_aa_circle(buf, cx, cy, 5.0, WHITE);
 
     let single = text.chars().count() <= 1;
     let glyph = if single {
@@ -125,26 +132,26 @@ fn draw_badge(buf: &mut [u8], text: &str) {
         draw_two_chars(text)
     };
 
-    // 2× upscale with 3×3 supersampling for anti-aliased edges.
-    let scale = 2;
+    // Supersampled overlay. The glyph is scaled to fit inside ~80% of the
+    // white disc's diameter so the number stays fully contained and readable.
     let ss = 3;
     let ss_total = (ss * ss) as f32;
-    let src_w = glyph.width;
-    let src_h = glyph.height;
-    let out_w = src_w * scale;
-    let out_h = src_h * scale;
-    let ox = cx as i32 - out_w as i32 / 2;
-    let oy = cy as i32 - out_h as i32 / 2;
+    let src_w = glyph.width as f32;
+    let src_h = glyph.height as f32;
+    let target = 8.0f32; // px — fits a 10px disc with a small margin
+    let scale = (target / src_w).min(target / src_h).max(0.5);
+    let out_w = (src_w * scale).round() as i32;
+    let out_h = (src_h * scale).round() as i32;
+    let ox = cx as i32 - out_w / 2;
+    let oy = cy as i32 - out_h / 2;
 
     for out_y in 0..out_h {
         for out_x in 0..out_w {
             let mut coverage = 0.0f32;
             for sy in 0..ss {
                 for sx in 0..ss {
-                    let src_x =
-                        (out_x as f32 + (sx as f32 + 0.5) / ss as f32) / scale as f32 - 0.5;
-                    let src_y =
-                        (out_y as f32 + (sy as f32 + 0.5) / ss as f32) / scale as f32 - 0.5;
+                    let src_x = (out_x as f32 + (sx as f32 + 0.5) / ss as f32) / scale - 0.5;
+                    let src_y = (out_y as f32 + (sy as f32 + 0.5) / ss as f32) / scale - 0.5;
                     let gx = src_x.round() as i32;
                     let gy = src_y.round() as i32;
                     if gx >= 0
@@ -159,8 +166,8 @@ fn draw_badge(buf: &mut [u8], text: &str) {
             }
             coverage /= ss_total;
             if coverage > 0.0 {
-                let px = ox + out_x as i32;
-                let py = oy + out_y as i32;
+                let px = ox + out_x;
+                let py = oy + out_y;
                 if (0..SIZE as i32).contains(&px) && (0..SIZE as i32).contains(&py) {
                     blend(buf, px as usize, py as usize, BADGE_TEXT, coverage);
                 }
