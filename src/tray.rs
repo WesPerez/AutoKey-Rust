@@ -65,10 +65,14 @@ impl TrayController {
 }
 
 fn create_icon(is_running: bool, config_name: &str) -> Result<Icon> {
-    const SIZE: usize = 32;
     let rgba = crate::icon::render_icon_rgba(is_running, config_name);
 
-    Icon::from_rgba(rgba, SIZE as u32, SIZE as u32).context("无法创建托盘图标")
+    Icon::from_rgba(
+        rgba,
+        crate::icon::ICON_SIZE as u32,
+        crate::icon::ICON_SIZE as u32,
+    )
+    .context("无法创建托盘图标")
 }
 
 pub fn is_autostart_enabled() -> bool {

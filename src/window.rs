@@ -27,6 +27,44 @@ pub fn is_own_process_window(hwnd: isize) -> bool {
     }
 }
 
+pub fn is_bindable_window(hwnd: isize) -> bool {
+    if !is_window_valid(hwnd) || is_own_process_window(hwnd) {
+        return false;
+    }
+
+    unsafe {
+        let hwnd = HWND(hwnd as *mut _);
+        if is_shell_or_desktop(hwnd) || !IsWindowVisible(hwnd).as_bool() {
+            return false;
+        }
+
+        let ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
+        ex_style & WS_EX_TOOLWINDOW.0 == 0
+    }
+}
+
+pub fn bindable_root_window(hwnd: isize) -> Option<isize> {
+    if !is_window_valid(hwnd) {
+        return None;
+    }
+
+    unsafe {
+        let hwnd = HWND(hwnd as *mut _);
+        for candidate in [
+            GetAncestor(hwnd, GA_ROOT),
+            GetAncestor(hwnd, GA_ROOTOWNER),
+            hwnd,
+        ] {
+            let candidate_hwnd = candidate.0 as isize;
+            if is_bindable_window(candidate_hwnd) {
+                return Some(candidate_hwnd);
+            }
+        }
+    }
+
+    None
+}
+
 pub fn find_own_hwnd() -> Option<isize> {
     let mut found = 0isize;
     unsafe {
@@ -39,6 +77,15 @@ pub fn find_own_hwnd() -> Option<isize> {
         None
     } else {
         Some(found)
+    }
+}
+
+fn is_shell_or_desktop(hwnd: HWND) -> bool {
+    unsafe {
+        hwnd.0.is_null()
+            || hwnd == GetDesktopWindow()
+            || hwnd == GetShellWindow()
+            || hwnd == GetAncestor(GetShellWindow(), GA_ROOT)
     }
 }
 

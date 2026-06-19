@@ -1,16 +1,25 @@
 use std::io::Write;
 use std::path::Path;
 
+const ICO_SIZES: &[usize] = &[16, 32, 48, 64, 128, 256];
+
+mod config {
+    pub const DEFAULT_CONFIG_NAME: &str = "\u{9ed8}\u{8ba4}";
+}
+
+#[allow(dead_code)]
+mod runtime_icon {
+    include!("src/icon.rs");
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    println!("cargo:rerun-if-changed=src/icon.rs");
+
     let out_dir = std::env::var("OUT_DIR")?;
     let ico_path = Path::new(&out_dir).join("app.ico");
 
-    // Generate a 32x32 ICO file with sky blue background and red center circle
-    if !ico_path.exists() {
-        generate_ico(&ico_path)?;
-    }
+    generate_ico(&ico_path)?;
 
-    // Embed the icon into the EXE using winres
     let mut res = winres::WindowsResource::new();
     res.set_icon(ico_path.to_string_lossy().as_ref());
     res.compile()?;
@@ -18,90 +27,74 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn generate_ico(path: &Path) -> std::io::Result<()> {
-    const SIZE: usize = 32;
-    let bg_color: [u8; 4] = [21, 101, 192, 255];
-    let accent: [u8; 4] = [211, 47, 47, 255];
-    let white: [u8; 4] = [255, 255, 255, 255];
-
-    let mut rgba = vec![0u8; SIZE * SIZE * 4];
-    for y in 0..SIZE {
-        for x in 0..SIZE {
-            let offset = (y * SIZE + x) * 4;
-            let dx = x as f32 - 15.5;
-            let dy = y as f32 - 15.5;
-            let distance = (dx * dx + dy * dy).sqrt();
-            let color = if distance <= 14.0 {
-                bg_color
-            } else if distance <= 15.5 {
-                let alpha = ((15.5 - distance) / 1.5 * 255.0) as u8;
-                [bg_color[0], bg_color[1], bg_color[2], alpha]
-            } else {
-                [0, 0, 0, 0]
-            };
-            rgba[offset..offset + 4].copy_from_slice(&color);
-        }
-    }
-    for y in 0..SIZE {
-        for x in 0..SIZE {
-            let offset = (y * SIZE + x) * 4;
-            let dx = x as f32 - 15.5;
-            let dy = y as f32 - 15.5;
-            let distance = (dx * dx + dy * dy).sqrt();
-            if distance <= 8.0 {
-                rgba[offset..offset + 4].copy_from_slice(&accent);
-            } else if distance <= 9.5 {
-                let alpha = ((9.5 - distance) / 1.5 * 255.0) as u8;
-                let blended = [white[0], white[1], white[2], alpha.min(rgba[offset + 3])];
-                rgba[offset..offset + 4].copy_from_slice(&blended);
-            }
-        }
-    }
-
-    // Convert RGBA to BGRA for BMP
-    let mut bgra = rgba;
-    for chunk in bgra.chunks_exact_mut(4) {
-        chunk.swap(0, 2);
-    }
+    let images: Vec<(usize, Vec<u8>)> = ICO_SIZES
+        .iter()
+        .copied()
+        .map(|size| {
+            let rgba = runtime_icon::render_icon_rgba_at(
+                size,
+                false,
+                config::DEFAULT_CONFIG_NAME,
+            );
+            (size, encode_bmp_icon_image(size, rgba))
+        })
+        .collect();
 
     let mut ico = Vec::new();
     ico.write_all(&0u16.to_le_bytes())?;
     ico.write_all(&1u16.to_le_bytes())?;
-    ico.write_all(&1u16.to_le_bytes())?;
+    ico.write_all(&(images.len() as u16).to_le_bytes())?;
 
-    ico.push(SIZE as u8);
-    ico.push(SIZE as u8);
-    ico.push(0u8);
-    ico.push(0u8);
-    ico.write_all(&1u16.to_le_bytes())?;
-    ico.write_all(&32u16.to_le_bytes())?;
+    let mut offset = 6 + images.len() * 16;
+    for (size, data) in &images {
+        ico.push(if *size >= 256 { 0 } else { *size as u8 });
+        ico.push(if *size >= 256 { 0 } else { *size as u8 });
+        ico.push(0u8);
+        ico.push(0u8);
+        ico.write_all(&1u16.to_le_bytes())?;
+        ico.write_all(&32u16.to_le_bytes())?;
+        ico.write_all(&(data.len() as u32).to_le_bytes())?;
+        ico.write_all(&(offset as u32).to_le_bytes())?;
+        offset += data.len();
+    }
+
+    for (_, data) in images {
+        ico.write_all(&data)?;
+    }
+
+    std::fs::write(path, ico)
+}
+
+fn encode_bmp_icon_image(size: usize, mut rgba: Vec<u8>) -> Vec<u8> {
+    for chunk in rgba.chunks_exact_mut(4) {
+        chunk.swap(0, 2);
+    }
 
     let bmp_header_size = 40u32;
-    let and_mask_row_size = SIZE.div_ceil(32) * 4;
-    let and_mask_size = (and_mask_row_size * SIZE) as u32;
-    let pixel_data_size = (SIZE * SIZE * 4) as u32;
-    let data_size = bmp_header_size + pixel_data_size + and_mask_size;
-    ico.write_all(&data_size.to_le_bytes())?;
-    ico.write_all(&((6 + 16) as u32).to_le_bytes())?;
+    let and_mask_row_size = size.div_ceil(32) * 4;
+    let and_mask_size = (and_mask_row_size * size) as u32;
+    let pixel_data_size = (size * size * 4) as u32;
+    let mut data = Vec::with_capacity((bmp_header_size + pixel_data_size + and_mask_size) as usize);
 
-    ico.write_all(&bmp_header_size.to_le_bytes())?;
-    ico.write_all(&(SIZE as i32).to_le_bytes())?;
-    ico.write_all(&(SIZE as i32 * 2).to_le_bytes())?;
-    ico.write_all(&1u16.to_le_bytes())?;
-    ico.write_all(&32u16.to_le_bytes())?;
-    ico.write_all(&0u32.to_le_bytes())?;
-    ico.write_all(&pixel_data_size.to_le_bytes())?;
-    ico.write_all(&0u32.to_le_bytes())?;
-    ico.write_all(&0u32.to_le_bytes())?;
-    ico.write_all(&0u32.to_le_bytes())?;
-    ico.write_all(&0u32.to_le_bytes())?;
+    data.write_all(&bmp_header_size.to_le_bytes()).unwrap();
+    data.write_all(&(size as i32).to_le_bytes()).unwrap();
+    data.write_all(&((size as i32) * 2).to_le_bytes()).unwrap();
+    data.write_all(&1u16.to_le_bytes()).unwrap();
+    data.write_all(&32u16.to_le_bytes()).unwrap();
+    data.write_all(&0u32.to_le_bytes()).unwrap();
+    data.write_all(&pixel_data_size.to_le_bytes()).unwrap();
+    data.write_all(&0u32.to_le_bytes()).unwrap();
+    data.write_all(&0u32.to_le_bytes()).unwrap();
+    data.write_all(&0u32.to_le_bytes()).unwrap();
+    data.write_all(&0u32.to_le_bytes()).unwrap();
 
-    for y in (0..SIZE).rev() {
-        let row_start = y * SIZE * 4;
-        ico.write_all(&bgra[row_start..row_start + SIZE * 4])?;
+    for y in (0..size).rev() {
+        let row_start = y * size * 4;
+        data.write_all(&rgba[row_start..row_start + size * 4])
+            .unwrap();
     }
 
     let and_mask = vec![0u8; and_mask_size as usize];
-    ico.write_all(&and_mask)?;
-
-    std::fs::write(path, ico)
+    data.write_all(&and_mask).unwrap();
+    data
 }

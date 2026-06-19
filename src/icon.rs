@@ -1,14 +1,34 @@
-//! Unified icon rendering for the tray, taskbar, and EXE.
-//!
-//! Draws a rounded background with a status-colored center circle and an
-//! optional badge in the top-right corner that shows the current config
-//! identifier (defaults to "0" for the default config, mirroring the
-//! original C# version's behavior).
-//!
-//! All icons share the same pixel pipeline so the tray, window title bar,
-//! and taskbar badge always stay visually consistent.
+// Unified icon rendering for the tray, taskbar, and EXE.
+//
+// Draws a rounded background with a route mark, status dot, and an optional
+// badge in the top-right corner that shows the current config
+// identifier (defaults to "0" for the default config, mirroring the
+// original C# version's behavior).
+//
+// All icons share the same pixel pipeline so the tray, window title bar,
+// and taskbar badge always stay visually consistent.
 
-const SIZE: usize = 32;
+pub const ICON_SIZE: usize = 256;
+
+#[derive(Clone, Copy)]
+struct IconMetrics {
+    size: usize,
+    scale: f32,
+}
+
+impl IconMetrics {
+    fn new(size: usize) -> Self {
+        assert!(size > 0, "icon size must be non-zero");
+        Self {
+            size,
+            scale: size as f32 / 64.0,
+        }
+    }
+
+    fn px(self, value: f32) -> f32 {
+        value * self.scale
+    }
+}
 
 #[derive(Clone, Copy)]
 struct Rgba([u8; 4]);
@@ -17,18 +37,36 @@ impl Rgba {
     const fn rgb(r: u8, g: u8, b: u8) -> Self {
         Self([r, g, b, 255])
     }
+
+    const fn with_alpha(r: u8, g: u8, b: u8, a: u8) -> Self {
+        Self([r, g, b, a])
+    }
 }
 
-/// Palette tuned to match the existing sky-blue theme.
-const BG: Rgba = Rgba::rgb(21, 101, 192);
+/// Palette tuned to match the existing sky-blue theme with a clearer icon mark.
+const BG_TOP: Rgba = Rgba::rgb(13, 42, 67);
+const BG_BOTTOM: Rgba = Rgba::rgb(25, 126, 190);
+const PANEL_GLOW: Rgba = Rgba::with_alpha(255, 255, 255, 34);
+const ROUTE_SHADOW: Rgba = Rgba::with_alpha(8, 26, 42, 95);
+const ROUTE_MAIN: Rgba = Rgba::rgb(242, 250, 255);
+const ROUTE_ACCENT: Rgba = Rgba::rgb(94, 220, 255);
 const WHITE: Rgba = Rgba::rgb(255, 255, 255);
 const ACCENT_RUNNING: Rgba = Rgba::rgb(76, 175, 80);
 const ACCENT_STOPPED: Rgba = Rgba::rgb(211, 47, 47);
-const BADGE_TEXT: Rgba = Rgba::rgb(21, 101, 192);
+const BADGE_TEXT: Rgba = Rgba::rgb(9, 55, 93);
 
-/// Render a full 32x32 RGBA buffer for the given state + config name.
+/// Render a full RGBA buffer for the given state + config name.
 /// The badge text is derived from the config name (default → "0").
 pub fn render_icon_rgba(is_running: bool, config_name: &str) -> Vec<u8> {
+    render_icon_rgba_at(ICON_SIZE, is_running, config_name)
+}
+
+/// Render a full RGBA buffer at the requested icon size.
+///
+/// This is used by the EXE/ICO build step so every embedded icon size is drawn
+/// natively instead of being downsampled from the 256px runtime icon.
+pub fn render_icon_rgba_at(size: usize, is_running: bool, config_name: &str) -> Vec<u8> {
+    let metrics = IconMetrics::new(size);
     let badge = config_badge_text(config_name);
     let accent = if is_running {
         ACCENT_RUNNING
@@ -36,18 +74,105 @@ pub fn render_icon_rgba(is_running: bool, config_name: &str) -> Vec<u8> {
         ACCENT_STOPPED
     };
 
-    let mut buf = vec![0u8; SIZE * SIZE * 4];
+    let mut buf = vec![0u8; metrics.size * metrics.size * 4];
 
-    // 1) Rounded-rectangle background.
-    fill_rounded_rect(&mut buf, 1.0, 1.0, 30.0, 30.0, 8.0, BG);
+    // 1) Rounded app tile.
+    fill_rounded_rect_vertical_gradient(
+        &mut buf,
+        metrics,
+        (
+            metrics.px(2.0),
+            metrics.px(2.0),
+            metrics.px(62.0),
+            metrics.px(62.0),
+        ),
+        metrics.px(14.0),
+        (BG_TOP, BG_BOTTOM),
+    );
+    fill_rounded_rect(
+        &mut buf,
+        metrics,
+        (
+            metrics.px(8.0),
+            metrics.px(8.0),
+            metrics.px(56.0),
+            metrics.px(56.0),
+        ),
+        metrics.px(10.0),
+        PANEL_GLOW,
+    );
 
-    // 2) Status center circle with a thin white ring (anti-aliased edges).
-    fill_aa_circle(&mut buf, 16.0, 16.0, 9.5, WHITE);
-    fill_aa_circle(&mut buf, 16.0, 16.0, 7.5, accent);
+    // 2) Dispatch route mark.
+    stroke_line(
+        &mut buf,
+        metrics,
+        (metrics.px(17.0), metrics.px(44.0)),
+        (metrics.px(31.0), metrics.px(30.0)),
+        metrics.px(8.0),
+        ROUTE_SHADOW,
+    );
+    stroke_line(
+        &mut buf,
+        metrics,
+        (metrics.px(31.0), metrics.px(30.0)),
+        (metrics.px(45.0), metrics.px(30.0)),
+        metrics.px(8.0),
+        ROUTE_SHADOW,
+    );
+    stroke_line(
+        &mut buf,
+        metrics,
+        (metrics.px(17.0), metrics.px(44.0)),
+        (metrics.px(31.0), metrics.px(30.0)),
+        metrics.px(5.4),
+        ROUTE_MAIN,
+    );
+    stroke_line(
+        &mut buf,
+        metrics,
+        (metrics.px(31.0), metrics.px(30.0)),
+        (metrics.px(45.0), metrics.px(30.0)),
+        metrics.px(5.4),
+        ROUTE_MAIN,
+    );
+    stroke_line(
+        &mut buf,
+        metrics,
+        (metrics.px(39.0), metrics.px(23.0)),
+        (metrics.px(47.0), metrics.px(30.0)),
+        metrics.px(4.4),
+        ROUTE_ACCENT,
+    );
+    stroke_line(
+        &mut buf,
+        metrics,
+        (metrics.px(39.0), metrics.px(37.0)),
+        (metrics.px(47.0), metrics.px(30.0)),
+        metrics.px(4.4),
+        ROUTE_ACCENT,
+    );
 
-    // 3) Config badge in the top-right corner (skip if empty).
+    // 3) Running/stopped state dot.
+    fill_aa_circle(
+        &mut buf,
+        metrics,
+        metrics.px(19.0),
+        metrics.px(45.0),
+        metrics.px(9.2),
+        WHITE,
+    );
+    fill_aa_circle(
+        &mut buf,
+        metrics,
+        metrics.px(19.0),
+        metrics.px(45.0),
+        metrics.px(6.8),
+        accent,
+    );
+
+    // 4) Config badge in the top-right corner (skip if empty).
     if !badge.is_empty() {
-        draw_badge(&mut buf, &badge, accent);
+        draw_badge(&mut buf, metrics, &badge, accent);
     }
 
     buf
@@ -61,6 +186,16 @@ pub fn config_badge_text(config_name: &str) -> String {
     if trimmed.eq_ignore_ascii_case(crate::config::DEFAULT_CONFIG_NAME) || trimmed.is_empty() {
         return "0".to_owned();
     }
+
+    let digits: String = trimmed
+        .chars()
+        .filter(|c| c.is_ascii_digit())
+        .take(2)
+        .collect();
+    if !digits.is_empty() {
+        return digits;
+    }
+
     let cleaned: String = trimmed
         .chars()
         .filter(|c| c.is_ascii_alphanumeric())
@@ -73,9 +208,16 @@ pub fn config_badge_text(config_name: &str) -> String {
     }
 }
 
-fn fill_rounded_rect(buf: &mut [u8], x0: f32, y0: f32, x1: f32, y1: f32, r: f32, color: Rgba) {
-    for y in 0..SIZE {
-        for x in 0..SIZE {
+fn fill_rounded_rect(
+    buf: &mut [u8],
+    metrics: IconMetrics,
+    rect: (f32, f32, f32, f32),
+    r: f32,
+    color: Rgba,
+) {
+    let (x0, y0, x1, y1) = rect;
+    for y in 0..metrics.size {
+        for x in 0..metrics.size {
             let px = x as f32 + 0.5;
             let py = y as f32 + 0.5;
             // Distance to the nearest edge of the rounded rect (0 inside, >0 outside)
@@ -89,16 +231,98 @@ fn fill_rounded_rect(buf: &mut [u8], x0: f32, y0: f32, x1: f32, y1: f32, r: f32,
             // 1px anti-aliased edge
             let cov = (1.0 - outside).clamp(0.0, 1.0);
             if cov > 0.0 {
-                blend(buf, x, y, color, cov);
+                blend(buf, metrics, x, y, color, cov);
             }
         }
     }
 }
 
-fn fill_aa_circle(buf: &mut [u8], cx: f32, cy: f32, radius: f32, color: Rgba) {
+fn fill_rounded_rect_vertical_gradient(
+    buf: &mut [u8],
+    metrics: IconMetrics,
+    rect: (f32, f32, f32, f32),
+    r: f32,
+    colors: (Rgba, Rgba),
+) {
+    let (x0, y0, x1, y1) = rect;
+    let (top, bottom) = colors;
+
+    for y in 0..metrics.size {
+        for x in 0..metrics.size {
+            let px = x as f32 + 0.5;
+            let py = y as f32 + 0.5;
+            let dx = (px - (x0 + r)).max((x1 - r) - px).max(0.0);
+            let dy = (py - (y0 + r)).max((y1 - r) - py).max(0.0);
+            let outside = if px < x0 + r || px > x1 - r || py < y0 + r || py > y1 - r {
+                ((dx * dx + dy * dy) - r * r).max(0.0).sqrt()
+            } else {
+                0.0
+            };
+            let cov = (1.0 - outside).clamp(0.0, 1.0);
+            if cov > 0.0 {
+                let t = ((py - y0) / (y1 - y0)).clamp(0.0, 1.0);
+                blend(buf, metrics, x, y, mix(top, bottom, t), cov);
+            }
+        }
+    }
+}
+
+fn stroke_line(
+    buf: &mut [u8],
+    metrics: IconMetrics,
+    from: (f32, f32),
+    to: (f32, f32),
+    width: f32,
+    color: Rgba,
+) {
+    let (x0, y0) = from;
+    let (x1, y1) = to;
+    let radius = width / 2.0;
+    let min_x = (x0.min(x1) - radius - 1.0).floor().max(0.0) as usize;
+    let max_x = (x0.max(x1) + radius + 1.0)
+        .ceil()
+        .min((metrics.size - 1) as f32) as usize;
+    let min_y = (y0.min(y1) - radius - 1.0).floor().max(0.0) as usize;
+    let max_y = (y0.max(y1) + radius + 1.0)
+        .ceil()
+        .min((metrics.size - 1) as f32) as usize;
+    let vx = x1 - x0;
+    let vy = y1 - y0;
+    let len2 = vx * vx + vy * vy;
+
+    for y in min_y..=max_y {
+        for x in min_x..=max_x {
+            let px = x as f32 + 0.5;
+            let py = y as f32 + 0.5;
+            let t = if len2 <= f32::EPSILON {
+                0.0
+            } else {
+                (((px - x0) * vx + (py - y0) * vy) / len2).clamp(0.0, 1.0)
+            };
+            let cx = x0 + vx * t;
+            let cy = y0 + vy * t;
+            let dx = px - cx;
+            let dy = py - cy;
+            let dist = (dx * dx + dy * dy).sqrt();
+            let cov = (radius - dist + 0.75).clamp(0.0, 1.0);
+            if cov > 0.0 {
+                blend(buf, metrics, x, y, color, cov);
+            }
+        }
+    }
+}
+
+fn fill_aa_circle(
+    buf: &mut [u8],
+    metrics: IconMetrics,
+    cx: f32,
+    cy: f32,
+    radius: f32,
+    color: Rgba,
+) {
     let r2 = radius * radius;
-    for y in 0..SIZE {
-        for x in 0..SIZE {
+    for y in 0..metrics.size {
+        for x in 0..metrics.size {
             let dx = x as f32 + 0.5 - cx;
             let dy = y as f32 + 0.5 - cy;
             let dist2 = dx * dx + dy * dy;
@@ -106,7 +330,7 @@ fn fill_aa_circle(buf: &mut [u8], cx: f32, cy: f32, radius: f32, color: Rgba) {
                 // Edge coverage based on distance to the radius
                 let dist = dist2.sqrt();
                 let cov = (radius - dist + 0.5).clamp(0.0, 1.0);
-                blend(buf, x, y, color, cov);
+                blend(buf, metrics, x, y, color, cov);
             }
         }
     }
@@ -116,71 +340,76 @@ fn fill_aa_circle(buf: &mut [u8], cx: f32, cy: f32, radius: f32, color: Rgba) {
 /// the config number rendered on top. The disc is white with a colored ring
 /// matching the running/stopped accent so the number stays readable against
 /// any background.
-fn draw_badge(buf: &mut [u8], text: &str, accent: Rgba) {
-    let cx = 23.0f32;
-    let cy = 9.0f32;
+fn draw_badge(buf: &mut [u8], metrics: IconMetrics, text: &str, accent: Rgba) {
+    let cx = metrics.px(47.7);
+    let cy = metrics.px(16.1);
 
     // 1) Colored accent ring (sits behind the white disc).
-    fill_aa_circle(buf, cx, cy, 6.5, accent);
-    // 2) White disc on top, leaving a 1.5px ring visible.
-    fill_aa_circle(buf, cx, cy, 5.0, WHITE);
+    fill_aa_circle(buf, metrics, cx, cy, metrics.px(16.0), accent);
+    // 2) White disc on top, leaving a readable colored ring visible.
+    fill_aa_circle(buf, metrics, cx, cy, metrics.px(13.4), WHITE);
 
-    let single = text.chars().count() <= 1;
-    let glyph = if single {
-        draw_digit(text.chars().next().unwrap_or('0'))
+    let glyph = badge_glyph(text);
+    if glyph.width == 0 || glyph.height == 0 {
+        return;
+    }
+
+    let single = glyph.source_chars <= 1;
+    let (target_w, target_h) = if glyph.is_digit {
+        (
+            metrics.px(if single { 18.0 } else { 28.0 }),
+            metrics.px(if single { 25.0 } else { 21.0 }),
+        )
     } else {
-        draw_two_chars(text)
+        (
+            metrics.px(if single { 19.0 } else { 24.0 }),
+            metrics.px(if single { 23.0 } else { 19.0 }),
+        )
     };
 
-    // Supersampled overlay. The glyph is scaled to fit inside ~80% of the
-    // white disc's diameter so the number stays fully contained and readable.
-    let ss = 3;
-    let ss_total = (ss * ss) as f32;
-    let src_w = glyph.width as f32;
-    let src_h = glyph.height as f32;
-    let target = 8.0f32; // px — fits a 10px disc with a small margin
-    let scale = (target / src_w).min(target / src_h).max(0.5);
-    let out_w = (src_w * scale).round() as i32;
-    let out_h = (src_h * scale).round() as i32;
-    let ox = cx as i32 - out_w / 2;
-    let oy = cy as i32 - out_h / 2;
+    let out_w = target_w.round().max(glyph.width as f32) as i32;
+    let out_h = target_h.round().max(glyph.height as f32) as i32;
+    let ox = cx.round() as i32 - out_w / 2;
+    let oy = cy.round() as i32 - out_h / 2;
 
     for out_y in 0..out_h {
         for out_x in 0..out_w {
-            let mut coverage = 0.0f32;
-            for sy in 0..ss {
-                for sx in 0..ss {
-                    let src_x = (out_x as f32 + (sx as f32 + 0.5) / ss as f32) / scale - 0.5;
-                    let src_y = (out_y as f32 + (sy as f32 + 0.5) / ss as f32) / scale - 0.5;
-                    let gx = src_x.round() as i32;
-                    let gy = src_y.round() as i32;
-                    if gx >= 0
-                        && gx < src_w as i32
-                        && gy >= 0
-                        && gy < src_h as i32
-                        && glyph.pixel(gx as usize, gy as usize)
-                    {
-                        coverage += 1.0;
-                    }
-                }
-            }
-            coverage /= ss_total;
-            if coverage > 0.0 {
+            let gx = (out_x as usize * glyph.width) / out_w as usize;
+            let gy = (out_y as usize * glyph.height) / out_h as usize;
+            if glyph.pixel(gx, gy) {
                 let px = ox + out_x;
                 let py = oy + out_y;
-                if (0..SIZE as i32).contains(&px) && (0..SIZE as i32).contains(&py) {
-                    blend(buf, px as usize, py as usize, BADGE_TEXT, coverage);
+                if (0..metrics.size as i32).contains(&px)
+                    && (0..metrics.size as i32).contains(&py)
+                {
+                    blend(buf, metrics, px as usize, py as usize, BADGE_TEXT, 1.0);
                 }
             }
         }
     }
 }
 
-fn blend(buf: &mut [u8], x: usize, y: usize, color: Rgba, coverage: f32) {
+fn mix(a: Rgba, b: Rgba, t: f32) -> Rgba {
+    let mut out = [0u8; 4];
+    for (index, channel) in out.iter_mut().enumerate() {
+        let value = a.0[index] as f32 + (b.0[index] as f32 - a.0[index] as f32) * t;
+        *channel = value.round().clamp(0.0, 255.0) as u8;
+    }
+    Rgba(out)
+}
+
+fn blend(
+    buf: &mut [u8],
+    metrics: IconMetrics,
+    x: usize,
+    y: usize,
+    color: Rgba,
+    coverage: f32,
+) {
     if coverage <= 0.0 {
         return;
     }
-    let off = (y * SIZE + x) * 4;
+    let off = (y * metrics.size + x) * 4;
     if off + 3 >= buf.len() {
         return;
     }
@@ -327,21 +556,22 @@ const fn glyph_for(c: char) -> Option<Glyph> {
     Some(Glyph { bits })
 }
 
-fn draw_digit(c: char) -> StampedGlyph {
-    let g = glyph_for(c).or_else(|| glyph_for('0')).unwrap();
-    StampedGlyph::from_glyph(&g)
+fn badge_glyph(text: &str) -> StampedGlyph {
+    let chars: Vec<char> = text.chars().take(2).collect();
+    if !chars.is_empty() && chars.iter().all(|c| c.is_ascii_digit()) {
+        return StampedGlyph::from_digits(&chars);
+    }
+    draw_alphanumeric_chars(text)
 }
 
-fn draw_two_chars(text: &str) -> StampedGlyph {
-    let mut chars = text.chars();
+fn draw_alphanumeric_chars(text: &str) -> StampedGlyph {
+    let mut chars = text.chars().take(2);
     let a = chars.next();
     let b = chars.next();
     match (a, b) {
         (Some(ca), Some(cb)) => {
-            let ga =
-                glyph_for(ca).unwrap_or_else(|| glyph_for('?').or_else(|| glyph_for('0')).unwrap());
-            let gb =
-                glyph_for(cb).unwrap_or_else(|| glyph_for('?').or_else(|| glyph_for('0')).unwrap());
+            let ga = glyph_for(ca).unwrap_or_else(|| glyph_for('0').unwrap());
+            let gb = glyph_for(cb).unwrap_or_else(|| glyph_for('0').unwrap());
             StampedGlyph::two(&ga, &gb)
         }
         (Some(ca), None) => {
@@ -357,6 +587,8 @@ fn draw_two_chars(text: &str) -> StampedGlyph {
 struct StampedGlyph {
     width: usize,
     height: usize,
+    source_chars: usize,
+    is_digit: bool,
     pixels: Vec<bool>,
 }
 
@@ -365,6 +597,8 @@ impl StampedGlyph {
         Self {
             width: 0,
             height: 0,
+            source_chars: 0,
+            is_digit: false,
             pixels: Vec::new(),
         }
     }
@@ -381,6 +615,8 @@ impl StampedGlyph {
         Self {
             width,
             height,
+            source_chars: 1,
+            is_digit: false,
             pixels,
         }
     }
@@ -405,6 +641,40 @@ impl StampedGlyph {
         Self {
             width,
             height,
+            source_chars: 2,
+            is_digit: false,
+            pixels,
+        }
+    }
+
+    fn from_digits(chars: &[char]) -> Self {
+        let source_chars = chars.len().min(2);
+        if source_chars == 0 {
+            return Self::blank();
+        }
+
+        let width = if source_chars == 1 { 3 } else { 7 };
+        let height = 5;
+        let mut pixels = vec![false; width * height];
+        let stamp = |pixels: &mut [bool], gx0: usize, c: char| {
+            let bits = digit_bits(c);
+            for y in 0..height {
+                for x in 0..3 {
+                    pixels[y * width + (gx0 + x)] = (bits[y] >> (2 - x)) & 1 != 0;
+                }
+            }
+        };
+
+        stamp(&mut pixels, 0, chars[0]);
+        if source_chars == 2 {
+            stamp(&mut pixels, 4, chars[1]);
+        }
+
+        Self {
+            width,
+            height,
+            source_chars,
+            is_digit: true,
             pixels,
         }
     }
@@ -414,6 +684,22 @@ impl StampedGlyph {
             return false;
         }
         self.pixels[y * self.width + x]
+    }
+}
+
+const fn digit_bits(c: char) -> [u8; 5] {
+    match c {
+        '0' => [0b111, 0b101, 0b101, 0b101, 0b111],
+        '1' => [0b010, 0b110, 0b010, 0b010, 0b111],
+        '2' => [0b111, 0b001, 0b111, 0b100, 0b111],
+        '3' => [0b111, 0b001, 0b111, 0b001, 0b111],
+        '4' => [0b101, 0b101, 0b111, 0b001, 0b001],
+        '5' => [0b111, 0b100, 0b111, 0b001, 0b111],
+        '6' => [0b111, 0b100, 0b111, 0b101, 0b111],
+        '7' => [0b111, 0b001, 0b010, 0b010, 0b010],
+        '8' => [0b111, 0b101, 0b111, 0b101, 0b111],
+        '9' => [0b111, 0b101, 0b111, 0b001, 0b111],
+        _ => [0b111, 0b101, 0b101, 0b101, 0b111],
     }
 }
 
@@ -431,7 +717,8 @@ mod tests {
     #[test]
     fn named_config_badge_is_alphanumeric() {
         assert_eq!(config_badge_text("abc"), "AB");
-        assert_eq!(config_badge_text("config1"), "CO");
+        assert_eq!(config_badge_text("config1"), "1");
+        assert_eq!(config_badge_text("config12"), "12");
         assert_eq!(config_badge_text("1"), "1");
     }
 
@@ -440,10 +727,19 @@ mod tests {
         for running in [false, true] {
             for name in ["默认", "abc", "config1", "1", "Z"] {
                 let rgba = render_icon_rgba(running, name);
-                assert_eq!(rgba.len(), SIZE * SIZE * 4);
+                assert_eq!(rgba.len(), ICON_SIZE * ICON_SIZE * 4);
                 // Not fully transparent
                 assert!(rgba.chunks_exact(4).any(|px| px[3] > 0));
             }
+        }
+    }
+
+    #[test]
+    fn renders_native_icon_sizes_without_panic() {
+        for size in [16, 32, 48, 64, 128, 256] {
+            let rgba = render_icon_rgba_at(size, false, "config12");
+            assert_eq!(rgba.len(), size * size * 4);
+            assert!(rgba.chunks_exact(4).any(|px| px[3] > 0));
         }
     }
 }

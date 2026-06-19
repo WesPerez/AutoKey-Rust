@@ -37,8 +37,12 @@ static CAPTURE_MODE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::
 
 /// Set by the keyboard hook when Ctrl+Z is pressed. The GUI polls this flag
 /// and calls switch_to_next_config(). Using an AtomicBool avoids the channel /
-/// try_lock race that can silently drop the NextConfig action.
+/// lock path for a shortcut that must not be dropped.
 pub static NEXT_CONFIG_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+/// Set when the low-level hook has already handled a solo Alt toggle. The GUI
+/// uses this to suppress its focused-window fallback and avoid a double toggle.
+pub static ALT_TOGGLE_HANDLED_BY_HOOK: AtomicBool = AtomicBool::new(false);
 
 pub struct GlobalHooks {
     thread_id: u32,
@@ -190,11 +194,10 @@ fn handle_keyboard_event(event: &KBDLLHOOKSTRUCT, message: u32) -> bool {
         // `LEFT_ALT_SOLO` means "Alt was pressed on its own and no other key has
         // been pressed since". Releasing it in that state toggles running.
         //
-        // The toggle is ALWAYS fired from this hook — it is the single source of
-        // truth — so it works whether the foreground window is our app or any
-        // other window. (The previous implementation skipped the hook toggle when
-        // our own window was focused and relied on a broken egui-based detector,
-        // which never fired because egui reports Alt itself as a held key.)
+        // The hook is the primary path for the toggle so it works whether the
+        // foreground window is our app or another window. The GUI also has a
+        // focused-window fallback, guarded by ALT_TOGGLE_HANDLED_BY_HOOK, for
+        // egui/winit edge cases.
         //
         // When our own window is the foreground we let the Alt key through
         // untouched (no suppression, no synthetic injection): the toggle still
@@ -302,13 +305,10 @@ fn handle_keyboard_event(event: &KBDLLHOOKSTRUCT, message: u32) -> bool {
             LEFT_ALT_DOWN.store(false, Ordering::Relaxed);
             let was_solo = LEFT_ALT_SOLO.swap(false, Ordering::Relaxed);
             if was_solo {
-                // Single source of truth: always fire the toggle from the hook,
-                // regardless of which window has focus. This fixes the case
-                // where the foreground window is our own app (the previous code
-                // skipped the toggle here and relied on a broken egui detector).
-                if let Some(sender) = COMMAND_SENDER.try_lock().and_then(|guard| guard.clone()) {
-                    let _ = sender.send(AppCommand::ToggleRunning);
-                }
+                // Primary path: fire the toggle from the hook and mark it so the
+                // focused-window fallback does not toggle a second time.
+                ALT_TOGGLE_HANDLED_BY_HOOK.store(true, Ordering::Release);
+                send_command(AppCommand::ToggleRunning);
             }
             // When our own window is focused, the Alt key-down was NOT
             // suppressed, so the key-up must pass through normally too — no
@@ -366,11 +366,8 @@ fn is_physical_left_alt(event: &KBDLLHOOKSTRUCT) -> bool {
 /// When true, we skip Alt key suppression so the app's own UI can handle
 /// keyboard events normally (e.g. the start/stop button still works).
 fn is_own_window_focused() -> bool {
-    let Some(own_hwnd) = window::find_own_hwnd() else {
-        return false;
-    };
     let fg = unsafe { GetForegroundWindow() };
-    !fg.is_invalid() && fg.0 as isize == own_hwnd
+    !fg.is_invalid() && window::is_own_process_window(fg.0 as isize)
 }
 
 fn handle_registered_hotkey(pressed: &BTreeSet<u16>) -> bool {
@@ -421,76 +418,70 @@ fn bind_window_under_cursor() {
         if GetCursorPos(&mut point).is_ok() {
             bind_window_at(point);
         } else {
-            // Fallback: bind the current foreground window
-            // (useful for games running with higher privileges)
-            let foreground = GetForegroundWindow();
-            if !foreground.0.is_null() {
-                let hwnd = foreground.0 as isize;
-                if !window::is_own_process_window(hwnd) {
-                    if let Some(bound_window) =
-                        BOUND_WINDOW.try_lock().and_then(|guard| guard.clone())
-                    {
-                        *bound_window.write() = Some(hwnd);
-                    }
-                    let title = window::get_window_title(hwnd);
-                    if let Some(status) = STATUS.try_lock().and_then(|guard| guard.clone()) {
-                        *status.write() = if title.is_empty() {
-                            format!("已绑定窗口 {hwnd:#x}")
-                        } else {
-                            format!("已绑定: {title}")
-                        };
-                    }
-                }
-            }
+            bind_first_valid_window(&[GetForegroundWindow()]);
         }
     }
 }
 
 fn bind_window_at(point: POINT) {
-    // SAFETY: WindowFromPoint/GetAncestor return opaque handles that are validated below.
+    // SAFETY: WindowFromPoint/GetAncestor return opaque handles that are validated before use.
     unsafe {
         let child = WindowFromPoint(point);
-        let desktop = GetDesktopWindow();
-        let shell = GetShellWindow();
+        bind_first_valid_window(&[
+            child,
+            GetAncestor(child, GA_ROOT),
+            GetAncestor(child, GA_ROOTOWNER),
+            GetForegroundWindow(),
+        ]);
+    }
+}
 
-        let target: HWND = if child.0.is_null() || child == desktop || child == shell {
-            // Fallback: use the foreground window if WindowFromPoint returns
-            // null or the desktop/shell window (happens with elevated games like DNF/MapleStory)
-            GetForegroundWindow()
-        } else {
-            let root = GetAncestor(child, GA_ROOT);
-            if root.0.is_null() || root == desktop || root == shell {
-                GetForegroundWindow()
-            } else {
-                root
+fn bind_first_valid_window(candidates: &[HWND]) {
+    let mut seen = Vec::new();
+    for candidate in candidates {
+        let hwnd = candidate.0 as isize;
+        if hwnd == 0 || seen.contains(&hwnd) {
+            continue;
+        }
+        seen.push(hwnd);
+
+        if let Some(target) = window::bindable_root_window(hwnd) {
+            set_bound_window(Some(target));
+            return;
+        }
+    }
+
+    set_bound_window(None);
+}
+
+fn set_bound_window(hwnd: Option<isize>) {
+    if let Some(bound_window) = BOUND_WINDOW.lock().clone() {
+        *bound_window.write() = hwnd;
+    }
+
+    if let Some(status) = STATUS.lock().clone() {
+        *status.write() = match hwnd {
+            Some(hwnd) => {
+                let title = window::get_window_title(hwnd);
+                if title.is_empty() {
+                    format!("已绑定窗口 {hwnd:#x}")
+                } else {
+                    format!("已绑定: {title}")
+                }
             }
+            None => "未找到可绑定窗口".to_owned(),
         };
-
-        if target.0.is_null() || target == desktop || target == shell {
-            return;
-        }
-
-        let hwnd = target.0 as isize;
-        if window::is_own_process_window(hwnd) {
-            return;
-        }
-
-        if let Some(bound_window) = BOUND_WINDOW.try_lock().and_then(|guard| guard.clone()) {
-            *bound_window.write() = Some(hwnd);
-        }
-        let title = window::get_window_title(hwnd);
-        if let Some(status) = STATUS.try_lock().and_then(|guard| guard.clone()) {
-            *status.write() = if title.is_empty() {
-                format!("已绑定窗口 {hwnd:#x}")
-            } else {
-                format!("已绑定: {title}")
-            };
-        }
     }
 }
 
 fn send_ui_action(action: UiAction) {
-    if let Some(sender) = UI_SENDER.try_lock().and_then(|guard| guard.clone()) {
+    if let Some(sender) = UI_SENDER.lock().clone() {
         let _ = sender.send(action);
+    }
+}
+
+fn send_command(command: AppCommand) {
+    if let Some(sender) = COMMAND_SENDER.lock().clone() {
+        let _ = sender.send(command);
     }
 }

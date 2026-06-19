@@ -2,7 +2,7 @@ use crate::config::{
     delete_named_config, list_config_names, load_into, save_named_config, AppPreferences, Config,
     DEFAULT_CONFIG_NAME, KEY_SLOT_COUNT, MAX_DELAY_MS, MIN_DELAY_MS,
 };
-use crate::hook::{GlobalHooks, NEXT_CONFIG_REQUESTED};
+use crate::hook::{GlobalHooks, ALT_TOGGLE_HANDLED_BY_HOOK, NEXT_CONFIG_REQUESTED};
 use crate::hotkey::key_display_name;
 use crate::single_instance::SingleInstance;
 use crate::tray::TrayController;
@@ -39,18 +39,17 @@ const SKY_BLUE_VERY_LIGHT: egui::Color32 = egui::Color32::from_rgb(240, 248, 255
 const SKY_BLUE_BG: egui::Color32 = egui::Color32::from_rgb(232, 245, 253); // #E8F5FD
 
 fn create_window_icon(is_running: bool, config_name: &str) -> egui::IconData {
-    const SIZE: usize = 32;
     let rgba = crate::icon::render_icon_rgba(is_running, config_name);
     egui::IconData {
-        width: SIZE as u32,
-        height: SIZE as u32,
+        width: crate::icon::ICON_SIZE as u32,
+        height: crate::icon::ICON_SIZE as u32,
         rgba,
     }
 }
 
 /// Create a Windows HICON from RGBA data for the taskbar icon.
 fn create_hicon(is_running: bool, config_name: &str) -> Option<isize> {
-    const SIZE: u32 = 32;
+    const SIZE: u32 = crate::icon::ICON_SIZE as u32;
     let rgba = crate::icon::render_icon_rgba(is_running, config_name);
 
     unsafe {
@@ -350,6 +349,9 @@ pub struct AutoKeyApp {
     last_saved_preferences: AppPreferences,
     last_autosave: Instant,
     last_config_switch: Instant,
+    last_hook_alt_toggle: Instant,
+    alt_fallback_down: bool,
+    alt_fallback_solo: bool,
     taskbar_hicon: Option<isize>,
     exit_requested: Arc<AtomicBool>,
     _tray_exit_watcher: TrayExitWatcher,
@@ -414,6 +416,9 @@ impl AutoKeyApp {
             last_saved_preferences,
             last_autosave: Instant::now(),
             last_config_switch: Instant::now() - Duration::from_secs(10),
+            last_hook_alt_toggle: Instant::now() - Duration::from_secs(10),
+            alt_fallback_down: false,
+            alt_fallback_solo: false,
             taskbar_hicon: None,
             exit_requested,
             _tray_exit_watcher: tray_exit_watcher,
@@ -539,9 +544,6 @@ impl AutoKeyApp {
     fn process_ui_actions(&mut self) {
         while let Ok(action) = self.ui_rx.try_recv() {
             match action {
-                UiAction::NextConfig => {
-                    self.switch_to_next_config();
-                }
                 UiAction::CapturedKey(vk) => {
                     if let Some(index) = self.capturing_key.take() {
                         let mut config = self.config.write();
@@ -557,6 +559,63 @@ impl AutoKeyApp {
                     }
                     GlobalHooks::cancel_capture();
                 }
+            }
+        }
+    }
+
+    fn process_focused_window_hotkeys(&mut self, ctx: &egui::Context) {
+        if ALT_TOGGLE_HANDLED_BY_HOOK.swap(false, Ordering::Acquire) {
+            self.last_hook_alt_toggle = Instant::now();
+        }
+
+        let ctrl_z_pressed = ctx.input_mut(|input| {
+            let mut pressed = false;
+            input.events.retain(|event| {
+                let is_match = matches!(
+                    event,
+                    egui::Event::Key {
+                        key: egui::Key::Z,
+                        modifiers,
+                        pressed: true,
+                        ..
+                    } if modifiers.ctrl && !modifiers.alt && !modifiers.shift
+                );
+                pressed |= is_match;
+                !is_match
+            });
+            pressed
+        });
+        if ctrl_z_pressed {
+            self.switch_to_next_config();
+        }
+
+        let (alt_down, cancel_solo) = ctx.input(|input| {
+            let cancel_solo = input.events.iter().any(|event| {
+                matches!(
+                    event,
+                    egui::Event::Key { pressed: true, .. }
+                        | egui::Event::PointerButton { pressed: true, .. }
+                        | egui::Event::MouseWheel { .. }
+                        | egui::Event::Text(_)
+                )
+            });
+            (input.modifiers.alt, cancel_solo)
+        });
+
+        if alt_down {
+            if !self.alt_fallback_down {
+                self.alt_fallback_down = true;
+                self.alt_fallback_solo = !cancel_solo;
+            } else if cancel_solo {
+                self.alt_fallback_solo = false;
+            }
+        } else if self.alt_fallback_down {
+            let was_solo = self.alt_fallback_solo;
+            self.alt_fallback_down = false;
+            self.alt_fallback_solo = false;
+
+            if was_solo && self.last_hook_alt_toggle.elapsed() > Duration::from_millis(300) {
+                let _ = self.command_tx.send(AppCommand::ToggleRunning);
             }
         }
     }
@@ -1125,12 +1184,10 @@ impl eframe::App for AutoKeyApp {
         if NEXT_CONFIG_REQUESTED.swap(false, Ordering::Acquire) {
             self.switch_to_next_config();
         }
+        self.process_focused_window_hotkeys(ctx);
 
-        // Left-Alt toggle is handled entirely by the low-level keyboard hook
-        // (hook.rs), which fires AppCommand::ToggleRunning on a clean solo
-        // Alt press→release regardless of which window has focus. The previous
-        // egui-based detector here never fired because egui reports Alt itself
-        // as a held key, so it has been removed.
+        // The low-level hook handles global hotkeys. This focused-window pass is
+        // a local fallback for egui/winit edge cases while the app itself is active.
 
         // Poll tray events for autostart toggle only.
         // Exit and Show events are handled by the TrayExitWatcher background thread,
@@ -1230,6 +1287,7 @@ pub fn run_gui(
     let mut viewport = egui::ViewportBuilder::default()
         .with_inner_size([width, height])
         .with_title(title)
+        .with_app_id(crate::APP_USER_MODEL_ID)
         .with_icon(icon);
 
     // Restore window position if previously saved

@@ -18,7 +18,10 @@ use parking_lot::RwLock;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use windows::core::PCWSTR;
+use windows::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID;
 use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
+
+pub const APP_USER_MODEL_ID: &str = "WesPerez.SysDispatcher";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppCommand {
@@ -30,7 +33,6 @@ pub enum AppCommand {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UiAction {
-    NextConfig,
     CapturedKey(u16),
 }
 
@@ -66,6 +68,7 @@ fn main() {
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Early anti-detection initialization
     stealth::init();
+    configure_taskbar_identity();
 
     config::initialize_store()?;
 
@@ -157,6 +160,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     gui_result?;
     Ok(())
+}
+
+fn configure_taskbar_identity() {
+    let app_id: Vec<u16> = APP_USER_MODEL_ID.encode_utf16().chain(Some(0)).collect();
+    unsafe {
+        let _ = SetCurrentProcessExplicitAppUserModelID(PCWSTR(app_id.as_ptr()));
+    }
 }
 
 fn show_fatal_error(message: &str) {
