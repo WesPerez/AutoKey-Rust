@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, TryRecvError};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 // ── High-precision timer using QueryPerformanceCounter ──────────────
 // Uses QPC for sub-millisecond timing accuracy instead of relying on
@@ -230,120 +230,129 @@ fn run_independent(
     bound_window: &RwLock<Option<isize>>,
     status: &RwLock<String>,
 ) -> Control {
-    let stop = Arc::new(AtomicBool::new(false));
-    let worker_count = keys.len();
-    let (done_tx, done_rx) = std::sync::mpsc::channel();
-
-    thread::scope(|scope| {
-        for key in keys {
-            let stop = stop.clone();
-            let done_tx = done_tx.clone();
+    let mut scheduled: Vec<ScheduledKey> = keys
+        .into_iter()
+        .map(|key| {
             set_key_running(key_running, key.index, true);
-            scope.spawn(move || {
-                run_independent_key(config, &key, &stop, bound_window, status);
-                set_key_running(key_running, key.index, false);
-                let _ = done_tx.send(());
-            });
-        }
-        drop(done_tx);
+            ScheduledKey {
+                key,
+                next_due: Instant::now(),
+                completed: 0,
+                active: true,
+            }
+        })
+        .collect();
 
-        let mut remaining = worker_count;
-        let mut control = Control::Continue;
-        while remaining > 0 {
-            loop {
-                match done_rx.try_recv() {
-                    Ok(()) => remaining = remaining.saturating_sub(1),
-                    Err(TryRecvError::Empty) => break,
-                    Err(TryRecvError::Disconnected) => {
-                        remaining = 0;
-                        break;
+    while scheduled.iter().any(|state| state.active) {
+        let Some((index, next_due)) = next_due_key(&scheduled) else {
+            break;
+        };
+
+        match wait_until_interruptible(next_due, commands, is_running, status) {
+            Control::Continue => {}
+            control => return control,
+        }
+
+        if !scheduled[index].active {
+            continue;
+        }
+
+        match perform_press(
+            commands,
+            &scheduled[index].key,
+            is_running,
+            bound_window,
+            status,
+        ) {
+            Ok(Control::Continue) => {
+                scheduled[index].completed = scheduled[index].completed.saturating_add(1);
+                if reached_limit(config.max_loops, scheduled[index].completed) {
+                    scheduled[index].active = false;
+                    set_key_running(key_running, scheduled[index].key.index, false);
+                } else {
+                    scheduled[index].next_due =
+                        Instant::now() + calculate_delay(config, &scheduled[index].key);
+                }
+            }
+            Ok(control) => return control,
+            Err(error) => {
+                handle_send_error(&scheduled[index].key, error, bound_window, status);
+                if config.max_loops >= 0 {
+                    scheduled[index].active = false;
+                    set_key_running(key_running, scheduled[index].key.index, false);
+                } else {
+                    match wait_interruptible(RECOVERY_DELAY, commands, is_running, status) {
+                        Control::Continue => {
+                            scheduled[index].next_due = Instant::now();
+                        }
+                        control => return control,
                     }
                 }
             }
-            if remaining == 0 {
-                break;
-            }
-
-            match commands.recv_timeout(Duration::from_millis(20)) {
-                Ok(AppCommand::Start) => {}
-                Ok(AppCommand::Stop) | Ok(AppCommand::ToggleRunning) => {
-                    stop.store(true, Ordering::Release);
-                    is_running.store(false, Ordering::Release);
-                    *status.write() = "已停止".to_owned();
-                    control = Control::Stop;
-                    break;
-                }
-                Ok(AppCommand::Exit) | Err(RecvTimeoutError::Disconnected) => {
-                    stop.store(true, Ordering::Release);
-                    control = Control::Exit;
-                    break;
-                }
-                Err(RecvTimeoutError::Timeout) => {}
-            }
         }
-        stop.store(true, Ordering::Release);
-        control
-    })
+    }
+
+    Control::Continue
 }
 
-fn run_independent_key(
-    config: &Config,
-    key: &RunKey,
-    stop: &AtomicBool,
-    bound_window: &RwLock<Option<isize>>,
+#[derive(Debug, Clone)]
+struct ScheduledKey {
+    key: RunKey,
+    next_due: Instant,
+    completed: u32,
+    active: bool,
+}
+
+fn next_due_key(scheduled: &[ScheduledKey]) -> Option<(usize, Instant)> {
+    scheduled
+        .iter()
+        .enumerate()
+        .filter(|(_, state)| state.active)
+        .min_by_key(|(_, state)| state.next_due)
+        .map(|(index, state)| (index, state.next_due))
+}
+
+fn wait_until_interruptible(
+    deadline: Instant,
+    commands: &Receiver<AppCommand>,
+    is_running: &AtomicBool,
     status: &RwLock<String>,
-) {
-    let mut completed = 0u32;
-    while !stop.load(Ordering::Acquire) {
-        match perform_press_until_stopped(key, stop, bound_window) {
-            Ok(true) => break,
-            Ok(false) => {}
-            Err(error) => {
-                handle_send_error(key, error, bound_window, status);
-                if config.max_loops >= 0 || wait_for_stop(RECOVERY_DELAY, stop) {
-                    break;
-                }
-                continue;
+) -> Control {
+    let now = Instant::now();
+    if deadline <= now {
+        return drain_control_commands(commands, is_running, status);
+    }
+    wait_interruptible(deadline.duration_since(now), commands, is_running, status)
+}
+
+fn drain_control_commands(
+    commands: &Receiver<AppCommand>,
+    is_running: &AtomicBool,
+    status: &RwLock<String>,
+) -> Control {
+    loop {
+        match commands.try_recv() {
+            Ok(AppCommand::Start) => {}
+            Ok(AppCommand::Exit) => return Control::Exit,
+            Ok(AppCommand::Stop) | Ok(AppCommand::ToggleRunning) => {
+                is_running.store(false, Ordering::Release);
+                *status.write() = "已停止".to_owned();
+                return Control::Stop;
             }
-        }
-
-        if wait_for_stop(calculate_delay(config, key), stop) {
-            break;
-        }
-        completed = completed.saturating_add(1);
-        if reached_limit(config.max_loops, completed) {
-            break;
+            Err(TryRecvError::Empty) => return Control::Continue,
+            Err(TryRecvError::Disconnected) => return Control::Exit,
         }
     }
 }
-
-fn perform_press_until_stopped(
-    key: &RunKey,
-    stop: &AtomicBool,
-    bound_window: &RwLock<Option<isize>>,
-) -> Result<bool> {
-    let pre_press = Duration::from_millis(humanizer::next_pre_press_delay(key.index) as u64);
-    if wait_for_stop(pre_press, stop) {
-        return Ok(true);
-    }
-
-    let target = match *bound_window.read() {
-        Some(hwnd) => InputTarget::Window(hwnd),
-        None => InputTarget::Foreground,
-    };
-    input::key_down(target, key.config.vk_code)?;
-    let stopped = wait_for_stop(
-        Duration::from_millis(humanizer::next_press_duration() as u64),
-        stop,
-    );
-    input::key_up(target, key.config.vk_code)?;
-    Ok(stopped)
-}
-
 /// Interruptible wait with a short high-precision finish.
-fn wait_for_stop(duration: Duration, stop: &AtomicBool) -> bool {
+fn wait_interruptible(
+    duration: Duration,
+    commands: &Receiver<AppCommand>,
+    is_running: &AtomicBool,
+    status: &RwLock<String>,
+) -> Control {
     if duration.is_zero() {
-        return stop.load(Ordering::Acquire);
+        return drain_control_commands(commands, is_running, status);
     }
 
     let deadline_ns = HI_RES_TIMER
@@ -353,13 +362,14 @@ fn wait_for_stop(duration: Duration, stop: &AtomicBool) -> bool {
     const MAX_SLEEP_SLICE: Duration = Duration::from_millis(20);
 
     loop {
-        if stop.load(Ordering::Acquire) {
-            return true;
+        match drain_control_commands(commands, is_running, status) {
+            Control::Continue => {}
+            control => return control,
         }
 
         let now = HI_RES_TIMER.now_ns();
         if now >= deadline_ns {
-            return false;
+            return Control::Continue;
         }
 
         let remaining_ns = deadline_ns - now;
@@ -368,20 +378,28 @@ fn wait_for_stop(duration: Duration, stop: &AtomicBool) -> bool {
         }
 
         let sleep_ns = (remaining_ns - SPIN_THRESHOLD_NS).min(MAX_SLEEP_SLICE.as_nanos() as u64);
-        thread::sleep(Duration::from_nanos(sleep_ns));
+        match commands.recv_timeout(Duration::from_nanos(sleep_ns)) {
+            Ok(AppCommand::Start) | Err(RecvTimeoutError::Timeout) => {}
+            Ok(AppCommand::Exit) | Err(RecvTimeoutError::Disconnected) => return Control::Exit,
+            Ok(AppCommand::Stop) | Ok(AppCommand::ToggleRunning) => {
+                is_running.store(false, Ordering::Release);
+                *status.write() = "已停止".to_owned();
+                return Control::Stop;
+            }
+        }
     }
 
     loop {
-        if stop.load(Ordering::Acquire) {
-            return true;
+        match drain_control_commands(commands, is_running, status) {
+            Control::Continue => {}
+            control => return control,
         }
         if HI_RES_TIMER.now_ns() >= deadline_ns {
-            return false;
+            return Control::Continue;
         }
         std::hint::spin_loop();
     }
 }
-
 fn run_sequential(
     commands: &Receiver<AppCommand>,
     config: &Config,
@@ -453,29 +471,6 @@ fn perform_press(
     Ok(control)
 }
 
-fn wait_interruptible(
-    duration: Duration,
-    commands: &Receiver<AppCommand>,
-    is_running: &AtomicBool,
-    status: &RwLock<String>,
-) -> Control {
-    if duration.is_zero() {
-        return Control::Continue;
-    }
-
-    match commands.recv_timeout(duration) {
-        Err(RecvTimeoutError::Timeout) => Control::Continue,
-        Err(RecvTimeoutError::Disconnected) => Control::Exit,
-        Ok(AppCommand::Exit) => Control::Exit,
-        Ok(AppCommand::Stop) | Ok(AppCommand::ToggleRunning) => {
-            is_running.store(false, Ordering::Release);
-            *status.write() = "已停止".to_owned();
-            Control::Stop
-        }
-        Ok(AppCommand::Start) => Control::Continue,
-    }
-}
-
 fn calculate_delay(config: &Config, key: &RunKey) -> Duration {
     let combined_range = key
         .config
@@ -485,13 +480,12 @@ fn calculate_delay(config: &Config, key: &RunKey) -> Duration {
 
     // If debugger/analysis tools were detected at startup, add extra jitter
     // to make timing analysis harder without breaking functionality
-    let extra_jitter = if crate::stealth::is_debugger_detected()
-        || crate::stealth::is_analysis_detected()
-    {
-        fastrand::u32(0..50)
-    } else {
-        0
-    };
+    let extra_jitter =
+        if crate::stealth::is_debugger_detected() || crate::stealth::is_analysis_detected() {
+            fastrand::u32(0..50)
+        } else {
+            0
+        };
 
     Duration::from_millis(
         humanizer::next_delay(key.config.base_delay, combined_range, key.index) as u64
@@ -572,6 +566,59 @@ mod tests {
         }
     }
 
+    #[test]
+    fn next_due_key_ignores_inactive_keys() {
+        let now = Instant::now();
+        let scheduled = vec![
+            ScheduledKey {
+                key: RunKey {
+                    index: 0,
+                    config: KeyConfig::default(),
+                },
+                next_due: now,
+                completed: 0,
+                active: false,
+            },
+            ScheduledKey {
+                key: RunKey {
+                    index: 1,
+                    config: KeyConfig::default(),
+                },
+                next_due: now + Duration::from_millis(10),
+                completed: 0,
+                active: true,
+            },
+        ];
+
+        assert_eq!(next_due_key(&scheduled).map(|(index, _)| index), Some(1));
+    }
+
+    #[test]
+    fn next_due_key_picks_earliest_active_key() {
+        let now = Instant::now();
+        let scheduled = vec![
+            ScheduledKey {
+                key: RunKey {
+                    index: 0,
+                    config: KeyConfig::default(),
+                },
+                next_due: now + Duration::from_millis(30),
+                completed: 0,
+                active: true,
+            },
+            ScheduledKey {
+                key: RunKey {
+                    index: 1,
+                    config: KeyConfig::default(),
+                },
+                next_due: now + Duration::from_millis(5),
+                completed: 0,
+                active: true,
+            },
+        ];
+
+        assert_eq!(next_due_key(&scheduled).map(|(index, _)| index), Some(1));
+    }
     #[test]
     fn hi_res_timer_is_monotonic() {
         let t1 = HI_RES_TIMER.now_ns();
