@@ -72,6 +72,20 @@ pub fn render_app_icon_rgba_at(size: usize) -> Vec<u8> {
     render_icon_rgba_at_with_badge(size, false, crate::config::DEFAULT_CONFIG_NAME, false)
 }
 
+/// Render a transparent taskbar overlay badge for pinned Windows taskbar icons.
+pub fn render_taskbar_overlay_rgba_at(size: usize, is_running: bool, config_name: &str) -> Vec<u8> {
+    let metrics = IconMetrics::new(size);
+    let accent = if is_running {
+        ACCENT_RUNNING
+    } else {
+        ACCENT_STOPPED
+    };
+    let badge = config_badge_text(config_name);
+    let mut buf = vec![0u8; metrics.size * metrics.size * 4];
+    draw_overlay_badge(&mut buf, metrics, &badge, accent);
+    buf
+}
+
 fn render_icon_rgba_at_with_badge(
     size: usize,
     is_running: bool,
@@ -378,6 +392,43 @@ fn draw_badge(buf: &mut [u8], metrics: IconMetrics, text: &str, accent: Rgba) {
 
     let out_w = target_w.round().max(glyph.width as f32) as i32;
     let out_h = target_h.round().max(glyph.height as f32) as i32;
+    draw_scaled_glyph(buf, metrics, &glyph, (cx, cy), (out_w, out_h), BADGE_TEXT);
+}
+
+fn draw_overlay_badge(buf: &mut [u8], metrics: IconMetrics, text: &str, accent: Rgba) {
+    let cx = metrics.px(32.0);
+    let cy = metrics.px(32.0);
+
+    fill_aa_circle(buf, metrics, cx, cy, metrics.px(31.0), accent);
+    fill_aa_circle(buf, metrics, cx, cy, metrics.px(26.8), WHITE);
+
+    let glyph = badge_glyph(text);
+    if glyph.width == 0 || glyph.height == 0 {
+        return;
+    }
+
+    let single = glyph.source_chars <= 1;
+    let out_w = metrics
+        .px(if single { 26.0 } else { 42.0 })
+        .round()
+        .max(glyph.width as f32) as i32;
+    let out_h = metrics
+        .px(if single { 34.0 } else { 30.0 })
+        .round()
+        .max(glyph.height as f32) as i32;
+    draw_scaled_glyph(buf, metrics, &glyph, (cx, cy), (out_w, out_h), BADGE_TEXT);
+}
+
+fn draw_scaled_glyph(
+    buf: &mut [u8],
+    metrics: IconMetrics,
+    glyph: &StampedGlyph,
+    center: (f32, f32),
+    size: (i32, i32),
+    color: Rgba,
+) {
+    let (cx, cy) = center;
+    let (out_w, out_h) = size;
     let ox = cx.round() as i32 - out_w / 2;
     let oy = cy.round() as i32 - out_h / 2;
 
@@ -391,7 +442,7 @@ fn draw_badge(buf: &mut [u8], metrics: IconMetrics, text: &str, accent: Rgba) {
                 if (0..metrics.size as i32).contains(&px)
                     && (0..metrics.size as i32).contains(&py)
                 {
-                    blend(buf, metrics, px as usize, py as usize, BADGE_TEXT, 1.0);
+                    blend(buf, metrics, px as usize, py as usize, color, 1.0);
                 }
             }
         }
@@ -692,5 +743,18 @@ mod tests {
             assert_eq!(rgba.len(), size * size * 4);
             assert!(rgba.chunks_exact(4).any(|px| px[3] > 0));
         }
+    }
+
+    #[test]
+    fn renders_taskbar_overlay_with_badge_pixels() {
+        let rgba = render_taskbar_overlay_rgba_at(64, true, "config12");
+        assert_eq!(rgba.len(), 64 * 64 * 4);
+        assert!(rgba.chunks_exact(4).any(|px| px[3] > 0));
+        assert!(rgba.chunks_exact(4).any(|px| {
+            px[0] == BADGE_TEXT.0[0]
+                && px[1] == BADGE_TEXT.0[1]
+                && px[2] == BADGE_TEXT.0[2]
+                && px[3] > 0
+        }));
     }
 }

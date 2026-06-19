@@ -13,11 +13,16 @@ use parking_lot::RwLock;
 use std::fs;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
-use std::sync::Arc;
+use std::sync::{Arc, Once};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
+use windows::core::PCWSTR;
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
+use windows::Win32::System::Com::{
+    CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
+};
+use windows::Win32::UI::Shell::{ITaskbarList3, TaskbarList};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 const AUTOSAVE_INTERVAL: Duration = Duration::from_millis(750);
@@ -51,7 +56,20 @@ fn create_window_icon(is_running: bool, config_name: &str) -> egui::IconData {
 fn create_hicon(is_running: bool, config_name: &str) -> Option<isize> {
     const SIZE: u32 = crate::icon::ICON_SIZE as u32;
     let rgba = crate::icon::render_icon_rgba(is_running, config_name);
+    create_hicon_from_rgba(SIZE, &rgba)
+}
 
+fn create_taskbar_overlay_hicon(is_running: bool, config_name: &str) -> Option<isize> {
+    const SIZE: u32 = 64;
+    let rgba = crate::icon::render_taskbar_overlay_rgba_at(
+        SIZE as usize,
+        is_running,
+        config_name,
+    );
+    create_hicon_from_rgba(SIZE, &rgba)
+}
+
+fn create_hicon_from_rgba(size: u32, rgba: &[u8]) -> Option<isize> {
     unsafe {
         let hdc = GetDC(None);
         if hdc.is_invalid() {
@@ -60,8 +78,8 @@ fn create_hicon(is_running: bool, config_name: &str) -> Option<isize> {
 
         let mut bmi: BITMAPINFO = std::mem::zeroed();
         bmi.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
-        bmi.bmiHeader.biWidth = SIZE as i32;
-        bmi.bmiHeader.biHeight = -(SIZE as i32); // top-down DIB
+        bmi.bmiHeader.biWidth = size as i32;
+        bmi.bmiHeader.biHeight = -(size as i32); // top-down DIB
         bmi.bmiHeader.biPlanes = 1;
         bmi.bmiHeader.biBitCount = 32;
         bmi.bmiHeader.biCompression = 0; // BI_RGB
@@ -83,7 +101,7 @@ fn create_hicon(is_running: bool, config_name: &str) -> Option<isize> {
 
         // Copy RGBA with pre-multiplied alpha and BGRA byte order
         let bits = ppv_bits as *mut u8;
-        for i in 0..(SIZE * SIZE) as usize {
+        for i in 0..(size * size) as usize {
             let r = rgba[i * 4];
             let g = rgba[i * 4 + 1];
             let b = rgba[i * 4 + 2];
@@ -95,11 +113,11 @@ fn create_hicon(is_running: bool, config_name: &str) -> Option<isize> {
         }
 
         // Create mask bitmap (1bpp, all zeros = fully opaque)
-        let mask_row_bytes = (SIZE.div_ceil(32) * 4) as usize;
-        let mask_data = vec![0u8; mask_row_bytes * SIZE as usize];
+        let mask_row_bytes = (size.div_ceil(32) * 4) as usize;
+        let mask_data = vec![0u8; mask_row_bytes * size as usize];
         let h_mask = CreateBitmap(
-            SIZE as i32,
-            SIZE as i32,
+            size as i32,
+            size as i32,
             1,
             1,
             Some(mask_data.as_ptr() as *const _),
@@ -154,6 +172,52 @@ fn update_taskbar_icon(is_running: bool, config_name: &str, old_hicon: &mut Opti
             let _ = SendMessageW(hwnd, WM_SETICON, WPARAM(0), LPARAM(hicon)); // ICON_SMALL
             let _ = SendMessageW(hwnd, WM_SETICON, WPARAM(1), LPARAM(hicon)); // ICON_BIG
             let _ = SendMessageW(hwnd, WM_SETICON, WPARAM(2), LPARAM(hicon)); // ICON_SMALL2
+        }
+    }
+}
+
+fn update_taskbar_overlay_icon(
+    is_running: bool,
+    config_name: &str,
+    old_hicon: &mut Option<isize>,
+) {
+    let Some(hwnd) = crate::window::find_own_hwnd() else {
+        return;
+    };
+    let Some(hicon) = create_taskbar_overlay_hicon(is_running, config_name) else {
+        return;
+    };
+
+    let description = format!("AutoKeyRust {}", crate::icon::config_badge_text(config_name));
+    let description: Vec<u16> = description.encode_utf16().chain(Some(0)).collect();
+
+    let result = unsafe {
+        static TASKBAR_COM_INIT: Once = Once::new();
+        TASKBAR_COM_INIT.call_once(|| {
+            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        });
+        let taskbar: windows::core::Result<ITaskbarList3> =
+            CoCreateInstance(&TaskbarList, None, CLSCTX_INPROC_SERVER);
+        taskbar.and_then(|taskbar| {
+            taskbar.HrInit()?;
+            taskbar.SetOverlayIcon(
+                HWND(hwnd as *mut _),
+                HICON(hicon as *mut _),
+                PCWSTR(description.as_ptr()),
+            )
+        })
+    };
+
+    if result.is_ok() {
+        if let Some(old) = old_hicon.take() {
+            unsafe {
+                let _ = DestroyIcon(HICON(old as *mut _));
+            }
+        }
+        *old_hicon = Some(hicon);
+    } else {
+        unsafe {
+            let _ = DestroyIcon(HICON(hicon as *mut _));
         }
     }
 }
@@ -354,6 +418,7 @@ pub struct AutoKeyApp {
     alt_fallback_down: bool,
     alt_fallback_solo: bool,
     taskbar_hicon: Option<isize>,
+    taskbar_overlay_hicon: Option<isize>,
     exit_requested: Arc<AtomicBool>,
     _tray_exit_watcher: TrayExitWatcher,
 }
@@ -421,6 +486,7 @@ impl AutoKeyApp {
             alt_fallback_down: false,
             alt_fallback_solo: false,
             taskbar_hicon: None,
+            taskbar_overlay_hicon: None,
             exit_requested,
             _tray_exit_watcher: tray_exit_watcher,
         };
@@ -1174,6 +1240,11 @@ impl Drop for AutoKeyApp {
                 let _ = DestroyIcon(HICON(hicon as *mut _));
             }
         }
+        if let Some(hicon) = self.taskbar_overlay_hicon.take() {
+            unsafe {
+                let _ = DestroyIcon(HICON(hicon as *mut _));
+            }
+        }
     }
 }
 
@@ -1213,6 +1284,7 @@ impl eframe::App for AutoKeyApp {
                 let icon = create_window_icon(running, &name);
                 ctx.send_viewport_cmd(egui::ViewportCommand::Icon(Some(Arc::new(icon))));
                 update_taskbar_icon(running, &name, &mut self.taskbar_hicon);
+                update_taskbar_overlay_icon(running, &name, &mut self.taskbar_overlay_hicon);
             }
         }
 
@@ -1229,6 +1301,11 @@ impl eframe::App for AutoKeyApp {
                 self.persist_window_state(ctx);
                 self.save_now();
                 if let Some(hicon) = self.taskbar_hicon.take() {
+                    unsafe {
+                        let _ = DestroyIcon(HICON(hicon as *mut _));
+                    }
+                }
+                if let Some(hicon) = self.taskbar_overlay_hicon.take() {
                     unsafe {
                         let _ = DestroyIcon(HICON(hicon as *mut _));
                     }
