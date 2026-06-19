@@ -16,4 +16,4 @@ echo Building release executable...
 cargo build --release
 if errorlevel 1 exit /b 1
 
-echo Done: %CD%\target\release\autokeyrust.exe
+echo Done: %CD%\target\release\sysdispatcher.exe
