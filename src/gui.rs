@@ -16,11 +16,8 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
-use windows::core::PROPVARIANT;
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
-use windows::Win32::Storage::EnhancedStorage::PKEY_AppUserModel_RelaunchIconResource;
-use windows::Win32::UI::Shell::PropertiesSystem::{IPropertyStore, PSCoerceToCanonicalValue, SHGetPropertyStoreForWindow};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 const AUTOSAVE_INTERVAL: Duration = Duration::from_millis(750);
@@ -136,32 +133,6 @@ fn create_hicon(is_running: bool, config_name: &str) -> Option<isize> {
     }
 }
 
-/// Point pinned taskbar shortcuts at the badge-bearing icon resource.
-fn set_taskbar_relaunch_icon_resource() -> bool {
-    let Some(hwnd) = crate::window::find_own_hwnd() else {
-        return false;
-    };
-    let Ok(exe_path) = std::env::current_exe() else {
-        return false;
-    };
-    let icon_resource = format!("{},-2", exe_path.display());
-
-    unsafe {
-        let hwnd = HWND(hwnd as *mut _);
-        let Ok(store) = SHGetPropertyStoreForWindow::<_, IPropertyStore>(hwnd) else {
-            return false;
-        };
-        let mut prop = PROPVARIANT::from(icon_resource.as_str());
-        if PSCoerceToCanonicalValue(&PKEY_AppUserModel_RelaunchIconResource, &mut prop).is_err() {
-            return false;
-        }
-        store
-            .SetValue(&PKEY_AppUserModel_RelaunchIconResource, &prop)
-            .and_then(|_| store.Commit())
-            .is_ok()
-    }
-}
-
 /// Update the taskbar icon by sending WM_SETICON to the main window.
 fn update_taskbar_icon(is_running: bool, config_name: &str, old_hicon: &mut Option<isize>) {
     let Some(hicon) = create_hicon(is_running, config_name) else {
@@ -182,6 +153,7 @@ fn update_taskbar_icon(is_running: bool, config_name: &str, old_hicon: &mut Opti
             let hwnd = HWND(hwnd as *mut _);
             let _ = SendMessageW(hwnd, WM_SETICON, WPARAM(0), LPARAM(hicon)); // ICON_SMALL
             let _ = SendMessageW(hwnd, WM_SETICON, WPARAM(1), LPARAM(hicon)); // ICON_BIG
+            let _ = SendMessageW(hwnd, WM_SETICON, WPARAM(2), LPARAM(hicon)); // ICON_SMALL2
         }
     }
 }
@@ -382,7 +354,6 @@ pub struct AutoKeyApp {
     alt_fallback_down: bool,
     alt_fallback_solo: bool,
     taskbar_hicon: Option<isize>,
-    taskbar_relaunch_icon_set: bool,
     exit_requested: Arc<AtomicBool>,
     _tray_exit_watcher: TrayExitWatcher,
 }
@@ -450,7 +421,6 @@ impl AutoKeyApp {
             alt_fallback_down: false,
             alt_fallback_solo: false,
             taskbar_hicon: None,
-            taskbar_relaunch_icon_set: false,
             exit_requested,
             _tray_exit_watcher: tray_exit_watcher,
         };
@@ -1233,10 +1203,6 @@ impl eframe::App for AutoKeyApp {
             tray.update(running, &name);
         }
 
-        if !self.taskbar_relaunch_icon_set {
-            self.taskbar_relaunch_icon_set = set_taskbar_relaunch_icon_resource();
-        }
-
         // Update window and taskbar icons when either running state or config changes.
         {
             let running = self.is_running.load(Ordering::Acquire);
@@ -1303,7 +1269,11 @@ pub fn run_gui(
     activation_handle: isize,
     hooks_available: bool,
 ) -> Result<(), eframe::Error> {
-    let title = format!("{} - {}", crate::obfstr!("调度器"), preferences.read().selected_config);
+    let title = format!(
+        "{} - {}",
+        crate::obfstr!("调度器"),
+        preferences.read().selected_config
+    );
     let (width, height, pos_x, pos_y) = {
         let prefs = preferences.read();
         (

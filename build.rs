@@ -17,34 +17,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let out_dir = std::env::var("OUT_DIR")?;
     let ico_path = Path::new(&out_dir).join("app.ico");
-    let taskbar_ico_path = Path::new(&out_dir).join("taskbar.ico");
 
-    generate_ico(&ico_path, IconKind::App)?;
-    generate_ico(&taskbar_ico_path, IconKind::Taskbar)?;
+    generate_ico(&ico_path)?;
 
     let mut res = winres::WindowsResource::new();
-    res.set_icon(ico_path.to_string_lossy().as_ref())
-        .set_icon_with_id(taskbar_ico_path.to_string_lossy().as_ref(), "2");
+    res.set_icon(ico_path.to_string_lossy().as_ref());
     res.compile()?;
     Ok(())
 }
 
-enum IconKind {
-    App,
-    Taskbar,
-}
-
-fn generate_ico(path: &Path, kind: IconKind) -> std::io::Result<()> {
+fn generate_ico(path: &Path) -> std::io::Result<()> {
     let images: Vec<(usize, Vec<u8>)> = ICO_SIZES
         .iter()
         .copied()
         .map(|size| {
-            let rgba = match kind {
-                IconKind::App => runtime_icon::render_app_icon_rgba_at(size),
-                IconKind::Taskbar => {
-                    runtime_icon::render_icon_rgba_at(size, false, config::DEFAULT_CONFIG_NAME)
-                }
-            };
+            let rgba = runtime_icon::render_app_icon_rgba_at(size);
             (size, encode_bmp_icon_image(size, rgba))
         })
         .collect();
