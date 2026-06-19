@@ -16,11 +16,15 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Once};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
-use windows::core::PCWSTR;
+use windows::core::{PCWSTR, PROPVARIANT};
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
+use windows::Win32::Storage::EnhancedStorage::PKEY_AppUserModel_RelaunchIconResource;
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
+};
+use windows::Win32::UI::Shell::PropertiesSystem::{
+    IPropertyStore, PSCoerceToCanonicalValue, SHGetPropertyStoreForWindow,
 };
 use windows::Win32::UI::Shell::{ITaskbarList3, TaskbarList};
 use windows::Win32::UI::WindowsAndMessaging::*;
@@ -219,6 +223,39 @@ fn update_taskbar_overlay_icon(
         unsafe {
             let _ = DestroyIcon(HICON(hicon as *mut _));
         }
+    }
+}
+
+fn update_taskbar_relaunch_icon_resource(is_running: bool, config_name: &str) -> bool {
+    let Some(hwnd) = crate::window::find_own_hwnd() else {
+        return false;
+    };
+
+    let icon_path = crate::config::app_directory().join("taskbar.ico");
+    let Some(parent) = icon_path.parent() else {
+        return false;
+    };
+    if fs::create_dir_all(parent).is_err() {
+        return false;
+    }
+    if fs::write(&icon_path, crate::icon::render_icon_ico(is_running, config_name)).is_err() {
+        return false;
+    }
+
+    let icon_resource = format!("{},0", icon_path.display());
+    unsafe {
+        let hwnd = HWND(hwnd as *mut _);
+        let Ok(store) = SHGetPropertyStoreForWindow::<_, IPropertyStore>(hwnd) else {
+            return false;
+        };
+        let mut prop = PROPVARIANT::from(icon_resource.as_str());
+        if PSCoerceToCanonicalValue(&PKEY_AppUserModel_RelaunchIconResource, &mut prop).is_err() {
+            return false;
+        }
+        store
+            .SetValue(&PKEY_AppUserModel_RelaunchIconResource, &prop)
+            .and_then(|_| store.Commit())
+            .is_ok()
     }
 }
 
@@ -1285,6 +1322,7 @@ impl eframe::App for AutoKeyApp {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Icon(Some(Arc::new(icon))));
                 update_taskbar_icon(running, &name, &mut self.taskbar_hicon);
                 update_taskbar_overlay_icon(running, &name, &mut self.taskbar_overlay_hicon);
+                update_taskbar_relaunch_icon_resource(running, &name);
             }
         }
 

@@ -8,7 +8,10 @@
 // All icons share the same pixel pipeline so the tray, window title bar,
 // and taskbar badge always stay visually consistent.
 
+use std::io::Write;
+
 pub const ICON_SIZE: usize = 256;
+const ICO_SIZES: &[usize] = &[16, 32, 48, 64, 128, 256];
 
 #[derive(Clone, Copy)]
 struct IconMetrics {
@@ -64,6 +67,20 @@ pub fn render_icon_rgba(is_running: bool, config_name: &str) -> Vec<u8> {
 /// Render a full RGBA buffer at the requested icon size.
 pub fn render_icon_rgba_at(size: usize, is_running: bool, config_name: &str) -> Vec<u8> {
     render_icon_rgba_at_with_badge(size, is_running, config_name, true)
+}
+
+/// Render a multi-size ICO containing the badge-bearing runtime icon.
+pub fn render_icon_ico(is_running: bool, config_name: &str) -> Vec<u8> {
+    let images: Vec<(usize, Vec<u8>)> = ICO_SIZES
+        .iter()
+        .copied()
+        .map(|size| {
+            let rgba = render_icon_rgba_at(size, is_running, config_name);
+            (size, encode_bmp_icon_image(size, rgba))
+        })
+        .collect();
+
+    encode_ico_images(images)
 }
 
 /// Render the embedded app/EXE icon without a config badge.
@@ -206,6 +223,66 @@ fn render_icon_rgba_at_with_badge(
     }
 
     buf
+}
+
+fn encode_ico_images(images: Vec<(usize, Vec<u8>)>) -> Vec<u8> {
+    let mut ico = Vec::new();
+    ico.write_all(&0u16.to_le_bytes()).unwrap();
+    ico.write_all(&1u16.to_le_bytes()).unwrap();
+    ico.write_all(&(images.len() as u16).to_le_bytes()).unwrap();
+
+    let mut offset = 6 + images.len() * 16;
+    for (size, data) in &images {
+        ico.push(if *size >= 256 { 0 } else { *size as u8 });
+        ico.push(if *size >= 256 { 0 } else { *size as u8 });
+        ico.push(0u8);
+        ico.push(0u8);
+        ico.write_all(&1u16.to_le_bytes()).unwrap();
+        ico.write_all(&32u16.to_le_bytes()).unwrap();
+        ico.write_all(&(data.len() as u32).to_le_bytes()).unwrap();
+        ico.write_all(&(offset as u32).to_le_bytes()).unwrap();
+        offset += data.len();
+    }
+
+    for (_, data) in images {
+        ico.write_all(&data).unwrap();
+    }
+
+    ico
+}
+
+fn encode_bmp_icon_image(size: usize, mut rgba: Vec<u8>) -> Vec<u8> {
+    for chunk in rgba.chunks_exact_mut(4) {
+        chunk.swap(0, 2);
+    }
+
+    let bmp_header_size = 40u32;
+    let and_mask_row_size = size.div_ceil(32) * 4;
+    let and_mask_size = (and_mask_row_size * size) as u32;
+    let pixel_data_size = (size * size * 4) as u32;
+    let mut data = Vec::with_capacity((bmp_header_size + pixel_data_size + and_mask_size) as usize);
+
+    data.write_all(&bmp_header_size.to_le_bytes()).unwrap();
+    data.write_all(&(size as i32).to_le_bytes()).unwrap();
+    data.write_all(&((size as i32) * 2).to_le_bytes()).unwrap();
+    data.write_all(&1u16.to_le_bytes()).unwrap();
+    data.write_all(&32u16.to_le_bytes()).unwrap();
+    data.write_all(&0u32.to_le_bytes()).unwrap();
+    data.write_all(&pixel_data_size.to_le_bytes()).unwrap();
+    data.write_all(&0u32.to_le_bytes()).unwrap();
+    data.write_all(&0u32.to_le_bytes()).unwrap();
+    data.write_all(&0u32.to_le_bytes()).unwrap();
+    data.write_all(&0u32.to_le_bytes()).unwrap();
+
+    for y in (0..size).rev() {
+        let row_start = y * size * 4;
+        data.write_all(&rgba[row_start..row_start + size * 4])
+            .unwrap();
+    }
+
+    let and_mask = vec![0u8; and_mask_size as usize];
+    data.write_all(&and_mask).unwrap();
+    data
 }
 
 /// Derive a short badge label from the config name.
