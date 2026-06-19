@@ -371,17 +371,10 @@ fn draw_badge(buf: &mut [u8], metrics: IconMetrics, text: &str, accent: Rgba) {
     }
 
     let single = glyph.source_chars <= 1;
-    let (target_w, target_h) = if glyph.is_digit {
-        (
-            metrics.px(if single { 18.0 } else { 28.0 }),
-            metrics.px(if single { 25.0 } else { 21.0 }),
-        )
-    } else {
-        (
-            metrics.px(if single { 19.0 } else { 24.0 }),
-            metrics.px(if single { 23.0 } else { 19.0 }),
-        )
-    };
+    let (target_w, target_h) = (
+        metrics.px(if single { 17.0 } else { 25.0 }),
+        metrics.px(if single { 22.5 } else { 18.5 }),
+    );
 
     let out_w = target_w.round().max(glyph.width as f32) as i32;
     let out_h = target_h.round().max(glyph.height as f32) as i32;
@@ -460,7 +453,7 @@ impl Glyph {
 const fn glyph_for(c: char) -> Option<Glyph> {
     let bits = match c {
         '0' => [
-            0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110,
+            0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110,
         ],
         '1' => [
             0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110,
@@ -573,10 +566,6 @@ const fn glyph_for(c: char) -> Option<Glyph> {
 }
 
 fn badge_glyph(text: &str) -> StampedGlyph {
-    let chars: Vec<char> = text.chars().take(2).collect();
-    if !chars.is_empty() && chars.iter().all(|c| c.is_ascii_digit()) {
-        return StampedGlyph::from_digits(&chars);
-    }
     draw_alphanumeric_chars(text)
 }
 
@@ -604,7 +593,6 @@ struct StampedGlyph {
     width: usize,
     height: usize,
     source_chars: usize,
-    is_digit: bool,
     pixels: Vec<bool>,
 }
 
@@ -614,7 +602,6 @@ impl StampedGlyph {
             width: 0,
             height: 0,
             source_chars: 0,
-            is_digit: false,
             pixels: Vec::new(),
         }
     }
@@ -632,16 +619,13 @@ impl StampedGlyph {
             width,
             height,
             source_chars: 1,
-            is_digit: false,
             pixels,
         }
     }
 
     fn two(a: &Glyph, b: &Glyph) -> Self {
-        // Shrink each glyph to 4-wide (drop rightmost column) and place with
-        // 1px gap so the pair fits inside the small badge circle.
-        let cell = 4;
-        let gap = 0;
+        let cell = 5;
+        let gap = 1;
         let width = cell * 2 + gap;
         let height = 7;
         let mut pixels = vec![false; width * height];
@@ -658,39 +642,6 @@ impl StampedGlyph {
             width,
             height,
             source_chars: 2,
-            is_digit: false,
-            pixels,
-        }
-    }
-
-    fn from_digits(chars: &[char]) -> Self {
-        let source_chars = chars.len().min(2);
-        if source_chars == 0 {
-            return Self::blank();
-        }
-
-        let width = if source_chars == 1 { 3 } else { 7 };
-        let height = 5;
-        let mut pixels = vec![false; width * height];
-        let stamp = |pixels: &mut [bool], gx0: usize, c: char| {
-            let bits = digit_bits(c);
-            for y in 0..height {
-                for x in 0..3 {
-                    pixels[y * width + (gx0 + x)] = (bits[y] >> (2 - x)) & 1 != 0;
-                }
-            }
-        };
-
-        stamp(&mut pixels, 0, chars[0]);
-        if source_chars == 2 {
-            stamp(&mut pixels, 4, chars[1]);
-        }
-
-        Self {
-            width,
-            height,
-            source_chars,
-            is_digit: true,
             pixels,
         }
     }
@@ -700,22 +651,6 @@ impl StampedGlyph {
             return false;
         }
         self.pixels[y * self.width + x]
-    }
-}
-
-const fn digit_bits(c: char) -> [u8; 5] {
-    match c {
-        '0' => [0b111, 0b101, 0b101, 0b101, 0b111],
-        '1' => [0b010, 0b110, 0b010, 0b010, 0b111],
-        '2' => [0b111, 0b001, 0b111, 0b100, 0b111],
-        '3' => [0b111, 0b001, 0b111, 0b001, 0b111],
-        '4' => [0b101, 0b101, 0b111, 0b001, 0b001],
-        '5' => [0b111, 0b100, 0b111, 0b001, 0b111],
-        '6' => [0b111, 0b100, 0b111, 0b101, 0b111],
-        '7' => [0b111, 0b001, 0b010, 0b010, 0b010],
-        '8' => [0b111, 0b101, 0b111, 0b101, 0b111],
-        '9' => [0b111, 0b101, 0b111, 0b001, 0b111],
-        _ => [0b111, 0b101, 0b101, 0b101, 0b111],
     }
 }
 
