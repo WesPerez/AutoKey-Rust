@@ -62,12 +62,28 @@ pub fn render_icon_rgba(is_running: bool, config_name: &str) -> Vec<u8> {
 }
 
 /// Render a full RGBA buffer at the requested icon size.
-///
-/// This is used by the EXE/ICO build step so every embedded icon size is drawn
-/// natively instead of being downsampled from the 256px runtime icon.
 pub fn render_icon_rgba_at(size: usize, is_running: bool, config_name: &str) -> Vec<u8> {
+    render_icon_rgba_at_with_badge(size, is_running, config_name, true)
+}
+
+/// Render the embedded app/EXE icon without a config badge.
+#[allow(dead_code)]
+pub fn render_app_icon_rgba_at(size: usize) -> Vec<u8> {
+    render_icon_rgba_at_with_badge(size, false, crate::config::DEFAULT_CONFIG_NAME, false)
+}
+
+fn render_icon_rgba_at_with_badge(
+    size: usize,
+    is_running: bool,
+    config_name: &str,
+    show_badge: bool,
+) -> Vec<u8> {
     let metrics = IconMetrics::new(size);
-    let badge = config_badge_text(config_name);
+    let badge = if show_badge {
+        config_badge_text(config_name)
+    } else {
+        String::new()
+    };
     let accent = if is_running {
         ACCENT_RUNNING
     } else {

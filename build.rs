@@ -31,11 +31,7 @@ fn generate_ico(path: &Path) -> std::io::Result<()> {
         .iter()
         .copied()
         .map(|size| {
-            let rgba = runtime_icon::render_icon_rgba_at(
-                size,
-                false,
-                config::DEFAULT_CONFIG_NAME,
-            );
+            let rgba = runtime_icon::render_app_icon_rgba_at(size);
             (size, encode_bmp_icon_image(size, rgba))
         })
         .collect();

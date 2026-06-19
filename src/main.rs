@@ -21,7 +21,7 @@ use windows::core::PCWSTR;
 use windows::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID;
 use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
 
-pub const APP_USER_MODEL_ID: &str = "WesPerez.SysDispatcher";
+pub const APP_USER_MODEL_ID: &str = "WesPerez.AutoKeyRust";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppCommand {

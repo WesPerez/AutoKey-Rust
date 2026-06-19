@@ -40,7 +40,7 @@ cargo build --release
 输出文件：
 
 ```text
-target\release\sysdispatcher.exe
+target\release\AutoKeyRust.exe
 ```
 
 ## 使用
