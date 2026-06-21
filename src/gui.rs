@@ -30,6 +30,7 @@ use windows::Win32::UI::Shell::{ITaskbarList3, TaskbarList};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 const AUTOSAVE_INTERVAL: Duration = Duration::from_millis(750);
+const TASKBAR_ICON_RETRY_INTERVAL: Duration = Duration::from_millis(500);
 
 const CHINESE_FONT_CANDIDATES: &[&str] = &[
     r"C:\Windows\Fonts\NotoSansSC-VF.ttf",
@@ -47,8 +48,8 @@ const SKY_BLUE_LIGHT: egui::Color32 = egui::Color32::from_rgb(227, 242, 253); //
 const SKY_BLUE_VERY_LIGHT: egui::Color32 = egui::Color32::from_rgb(240, 248, 255); // #F0F8FF
 const SKY_BLUE_BG: egui::Color32 = egui::Color32::from_rgb(232, 245, 253); // #E8F5FD
 
-fn create_window_icon(is_running: bool, config_name: &str) -> egui::IconData {
-    let rgba = crate::icon::render_icon_rgba(is_running, config_name);
+fn create_window_icon(is_running: bool) -> egui::IconData {
+    let rgba = crate::icon::render_icon_rgba_unbadged(is_running);
     egui::IconData {
         width: crate::icon::ICON_SIZE as u32,
         height: crate::icon::ICON_SIZE as u32,
@@ -57,19 +58,15 @@ fn create_window_icon(is_running: bool, config_name: &str) -> egui::IconData {
 }
 
 /// Create a Windows HICON from RGBA data for the taskbar icon.
-fn create_hicon(is_running: bool, config_name: &str) -> Option<isize> {
+fn create_hicon(is_running: bool) -> Option<isize> {
     const SIZE: u32 = crate::icon::ICON_SIZE as u32;
-    let rgba = crate::icon::render_icon_rgba(is_running, config_name);
+    let rgba = crate::icon::render_icon_rgba_unbadged(is_running);
     create_hicon_from_rgba(SIZE, &rgba)
 }
 
 fn create_taskbar_overlay_hicon(is_running: bool, config_name: &str) -> Option<isize> {
     const SIZE: u32 = 64;
-    let rgba = crate::icon::render_taskbar_overlay_rgba_at(
-        SIZE as usize,
-        is_running,
-        config_name,
-    );
+    let rgba = crate::icon::render_taskbar_overlay_rgba_at(SIZE as usize, is_running, config_name);
     create_hicon_from_rgba(SIZE, &rgba)
 }
 
@@ -156,43 +153,50 @@ fn create_hicon_from_rgba(size: u32, rgba: &[u8]) -> Option<isize> {
 }
 
 /// Update the taskbar icon by sending WM_SETICON to the main window.
-fn update_taskbar_icon(is_running: bool, config_name: &str, old_hicon: &mut Option<isize>) {
-    let Some(hicon) = create_hicon(is_running, config_name) else {
-        return;
+fn update_taskbar_icon(is_running: bool, old_hicon: &mut Option<isize>) -> bool {
+    let Some(hicon) = create_hicon(is_running) else {
+        return false;
     };
 
-    // Destroy old icon if any
+    let Some(hwnd) = crate::window::find_own_hwnd() else {
+        unsafe {
+            let _ = DestroyIcon(HICON(hicon as *mut _));
+        }
+        return false;
+    };
+
+    unsafe {
+        let hwnd = HWND(hwnd as *mut _);
+        let _ = SendMessageW(hwnd, WM_SETICON, WPARAM(0), LPARAM(hicon)); // ICON_SMALL
+        let _ = SendMessageW(hwnd, WM_SETICON, WPARAM(1), LPARAM(hicon)); // ICON_BIG
+        let _ = SendMessageW(hwnd, WM_SETICON, WPARAM(2), LPARAM(hicon)); // ICON_SMALL2
+    }
+
     if let Some(old) = old_hicon.take() {
         unsafe {
             let _ = DestroyIcon(HICON(old as *mut _));
         }
     }
     *old_hicon = Some(hicon);
-
-    // Find the main window and set the icon
-    if let Some(hwnd) = crate::window::find_own_hwnd() {
-        unsafe {
-            let hwnd = HWND(hwnd as *mut _);
-            let _ = SendMessageW(hwnd, WM_SETICON, WPARAM(0), LPARAM(hicon)); // ICON_SMALL
-            let _ = SendMessageW(hwnd, WM_SETICON, WPARAM(1), LPARAM(hicon)); // ICON_BIG
-            let _ = SendMessageW(hwnd, WM_SETICON, WPARAM(2), LPARAM(hicon)); // ICON_SMALL2
-        }
-    }
+    true
 }
 
 fn update_taskbar_overlay_icon(
     is_running: bool,
     config_name: &str,
     old_hicon: &mut Option<isize>,
-) {
+) -> bool {
     let Some(hwnd) = crate::window::find_own_hwnd() else {
-        return;
+        return false;
     };
     let Some(hicon) = create_taskbar_overlay_hicon(is_running, config_name) else {
-        return;
+        return false;
     };
 
-    let description = format!("AutoKeyRust {}", crate::icon::config_badge_text(config_name));
+    let description = format!(
+        "AutoKeyRust {}",
+        crate::icon::config_badge_text(config_name)
+    );
     let description: Vec<u16> = description.encode_utf16().chain(Some(0)).collect();
 
     let result = unsafe {
@@ -219,10 +223,12 @@ fn update_taskbar_overlay_icon(
             }
         }
         *old_hicon = Some(hicon);
+        true
     } else {
         unsafe {
             let _ = DestroyIcon(HICON(hicon as *mut _));
         }
+        false
     }
 }
 
@@ -231,14 +237,21 @@ fn update_taskbar_relaunch_icon_resource(is_running: bool, config_name: &str) ->
         return false;
     };
 
-    let icon_path = crate::config::app_directory().join("taskbar.ico");
+    let badge = crate::icon::config_badge_text(config_name);
+    let status = if is_running { "running" } else { "stopped" };
+    let icon_path = crate::config::app_directory().join(format!("taskbar-{status}-{badge}.ico"));
     let Some(parent) = icon_path.parent() else {
         return false;
     };
     if fs::create_dir_all(parent).is_err() {
         return false;
     }
-    if fs::write(&icon_path, crate::icon::render_icon_ico(is_running, config_name)).is_err() {
+    if fs::write(
+        &icon_path,
+        crate::icon::render_icon_ico_unbadged(is_running),
+    )
+    .is_err()
+    {
         return false;
     }
 
@@ -447,6 +460,7 @@ pub struct AutoKeyApp {
     capturing_key: Option<usize>,
     tray: Option<TrayController>,
     last_icon_state: Option<(bool, String)>,
+    last_icon_attempt: Option<((bool, String), Instant)>,
     last_saved_config: Config,
     last_saved_preferences: AppPreferences,
     last_autosave: Instant,
@@ -515,6 +529,7 @@ impl AutoKeyApp {
             capturing_key: None,
             tray,
             last_icon_state: None,
+            last_icon_attempt: None,
             last_saved_config,
             last_saved_preferences,
             last_autosave: Instant::now(),
@@ -1316,13 +1331,27 @@ impl eframe::App for AutoKeyApp {
             let running = self.is_running.load(Ordering::Acquire);
             let name = self.preferences.read().selected_config.clone();
             let state = (running, name.clone());
-            if self.last_icon_state.as_ref() != Some(&state) {
-                self.last_icon_state = Some(state);
-                let icon = create_window_icon(running, &name);
+            let needs_refresh = self.last_icon_state.as_ref() != Some(&state);
+            let retry_ready = self
+                .last_icon_attempt
+                .as_ref()
+                .map(|(attempted_state, attempted_at)| {
+                    attempted_state != &state
+                        || attempted_at.elapsed() >= TASKBAR_ICON_RETRY_INTERVAL
+                })
+                .unwrap_or(true);
+
+            if needs_refresh && retry_ready {
+                self.last_icon_attempt = Some((state.clone(), Instant::now()));
+                let icon = create_window_icon(running);
                 ctx.send_viewport_cmd(egui::ViewportCommand::Icon(Some(Arc::new(icon))));
-                update_taskbar_icon(running, &name, &mut self.taskbar_hicon);
-                update_taskbar_overlay_icon(running, &name, &mut self.taskbar_overlay_hicon);
-                update_taskbar_relaunch_icon_resource(running, &name);
+                let base_icon_ok = update_taskbar_icon(running, &mut self.taskbar_hicon);
+                let overlay_ok =
+                    update_taskbar_overlay_icon(running, &name, &mut self.taskbar_overlay_hicon);
+                let _ = update_taskbar_relaunch_icon_resource(running, &name);
+                if base_icon_ok && overlay_ok {
+                    self.last_icon_state = Some(state);
+                }
             }
         }
 
@@ -1399,10 +1428,7 @@ pub fn run_gui(
         )
     };
 
-    let icon = Arc::new(create_window_icon(
-        false,
-        &preferences.read().selected_config,
-    ));
+    let icon = Arc::new(create_window_icon(false));
 
     let mut viewport = egui::ViewportBuilder::default()
         .with_inner_size([width, height])

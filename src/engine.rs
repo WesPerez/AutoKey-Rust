@@ -242,11 +242,13 @@ fn run_independent(
             }
         })
         .collect();
+    let mut next_search_index = 0usize;
 
     while scheduled.iter().any(|state| state.active) {
-        let Some((index, next_due)) = next_due_key(&scheduled) else {
+        let Some((index, next_due)) = next_due_key(&scheduled, next_search_index) else {
             break;
         };
+        next_search_index = (index + 1) % scheduled.len();
 
         match wait_until_interruptible(next_due, commands, is_running, status) {
             Control::Continue => {}
@@ -270,8 +272,10 @@ fn run_independent(
                     scheduled[index].active = false;
                     set_key_running(key_running, scheduled[index].key.index, false);
                 } else {
-                    scheduled[index].next_due =
-                        Instant::now() + calculate_delay(config, &scheduled[index].key);
+                    scheduled[index].next_due = next_scheduled_due(
+                        scheduled[index].next_due,
+                        calculate_delay(config, &scheduled[index].key),
+                    );
                 }
             }
             Ok(control) => return control,
@@ -303,13 +307,31 @@ struct ScheduledKey {
     active: bool,
 }
 
-fn next_due_key(scheduled: &[ScheduledKey]) -> Option<(usize, Instant)> {
-    scheduled
+fn next_due_key(scheduled: &[ScheduledKey], start_index: usize) -> Option<(usize, Instant)> {
+    let earliest = scheduled
         .iter()
-        .enumerate()
-        .filter(|(_, state)| state.active)
-        .min_by_key(|(_, state)| state.next_due)
-        .map(|(index, state)| (index, state.next_due))
+        .filter(|state| state.active)
+        .map(|state| state.next_due)
+        .min()?;
+
+    let len = scheduled.len();
+    for offset in 0..len {
+        let index = (start_index + offset) % len;
+        let state = &scheduled[index];
+        if state.active && state.next_due == earliest {
+            return Some((index, earliest));
+        }
+    }
+
+    None
+}
+
+fn next_scheduled_due(previous_due: Instant, delay: Duration) -> Instant {
+    let now = Instant::now();
+    previous_due
+        .checked_add(delay)
+        .filter(|candidate| *candidate > now)
+        .unwrap_or(now)
 }
 
 fn wait_until_interruptible(
@@ -590,7 +612,7 @@ mod tests {
             },
         ];
 
-        assert_eq!(next_due_key(&scheduled).map(|(index, _)| index), Some(1));
+        assert_eq!(next_due_key(&scheduled, 0).map(|(index, _)| index), Some(1));
     }
 
     #[test]
@@ -617,8 +639,36 @@ mod tests {
             },
         ];
 
-        assert_eq!(next_due_key(&scheduled).map(|(index, _)| index), Some(1));
+        assert_eq!(next_due_key(&scheduled, 0).map(|(index, _)| index), Some(1));
     }
+
+    #[test]
+    fn next_due_key_rotates_equal_deadlines() {
+        let now = Instant::now();
+        let scheduled = vec![
+            ScheduledKey {
+                key: RunKey {
+                    index: 0,
+                    config: KeyConfig::default(),
+                },
+                next_due: now,
+                completed: 0,
+                active: true,
+            },
+            ScheduledKey {
+                key: RunKey {
+                    index: 1,
+                    config: KeyConfig::default(),
+                },
+                next_due: now,
+                completed: 0,
+                active: true,
+            },
+        ];
+
+        assert_eq!(next_due_key(&scheduled, 1).map(|(index, _)| index), Some(1));
+    }
+
     #[test]
     fn hi_res_timer_is_monotonic() {
         let t1 = HI_RES_TIMER.now_ns();

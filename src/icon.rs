@@ -1,9 +1,8 @@
 // Unified icon rendering for the tray, taskbar, and EXE.
 //
 // Draws a rounded background with a route mark, status dot, and an optional
-// badge in the top-right corner that shows the current config
-// identifier (defaults to "0" for the default config, mirroring the
-// original C# version's behavior).
+// badge that shows the current config identifier (defaults to "0" for the
+// default config, mirroring the original C# version's behavior).
 //
 // All icons share the same pixel pipeline so the tray, window title bar,
 // and taskbar badge always stay visually consistent.
@@ -69,7 +68,18 @@ pub fn render_icon_rgba_at(size: usize, is_running: bool, config_name: &str) -> 
     render_icon_rgba_at_with_badge(size, is_running, config_name, true)
 }
 
+/// Render a full RGBA buffer without a config badge.
+pub fn render_icon_rgba_unbadged(is_running: bool) -> Vec<u8> {
+    render_icon_rgba_at_unbadged(ICON_SIZE, is_running)
+}
+
+/// Render a full RGBA buffer at the requested icon size without a config badge.
+pub fn render_icon_rgba_at_unbadged(size: usize, is_running: bool) -> Vec<u8> {
+    render_icon_rgba_at_with_badge(size, is_running, crate::config::DEFAULT_CONFIG_NAME, false)
+}
+
 /// Render a multi-size ICO containing the badge-bearing runtime icon.
+#[allow(dead_code)]
 pub fn render_icon_ico(is_running: bool, config_name: &str) -> Vec<u8> {
     let images: Vec<(usize, Vec<u8>)> = ICO_SIZES
         .iter()
@@ -83,10 +93,24 @@ pub fn render_icon_ico(is_running: bool, config_name: &str) -> Vec<u8> {
     encode_ico_images(images)
 }
 
+/// Render a multi-size ICO without a config badge.
+pub fn render_icon_ico_unbadged(is_running: bool) -> Vec<u8> {
+    let images: Vec<(usize, Vec<u8>)> = ICO_SIZES
+        .iter()
+        .copied()
+        .map(|size| {
+            let rgba = render_icon_rgba_at_unbadged(size, is_running);
+            (size, encode_bmp_icon_image(size, rgba))
+        })
+        .collect();
+
+    encode_ico_images(images)
+}
+
 /// Render the embedded app/EXE icon without a config badge.
 #[allow(dead_code)]
 pub fn render_app_icon_rgba_at(size: usize) -> Vec<u8> {
-    render_icon_rgba_at_with_badge(size, false, crate::config::DEFAULT_CONFIG_NAME, false)
+    render_icon_rgba_at_unbadged(size, false)
 }
 
 /// Render a transparent taskbar overlay badge for pinned Windows taskbar icons.
@@ -516,8 +540,7 @@ fn draw_scaled_glyph(
             if glyph.pixel(gx, gy) {
                 let px = ox + out_x;
                 let py = oy + out_y;
-                if (0..metrics.size as i32).contains(&px)
-                    && (0..metrics.size as i32).contains(&py)
+                if (0..metrics.size as i32).contains(&px) && (0..metrics.size as i32).contains(&py)
                 {
                     blend(buf, metrics, px as usize, py as usize, color, 1.0);
                 }
@@ -535,14 +558,7 @@ fn mix(a: Rgba, b: Rgba, t: f32) -> Rgba {
     Rgba(out)
 }
 
-fn blend(
-    buf: &mut [u8],
-    metrics: IconMetrics,
-    x: usize,
-    y: usize,
-    color: Rgba,
-    coverage: f32,
-) {
+fn blend(buf: &mut [u8], metrics: IconMetrics, x: usize, y: usize, color: Rgba, coverage: f32) {
     if coverage <= 0.0 {
         return;
     }
