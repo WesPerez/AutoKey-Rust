@@ -308,22 +308,27 @@ struct ScheduledKey {
 }
 
 fn next_due_key(scheduled: &[ScheduledKey], start_index: usize) -> Option<(usize, Instant)> {
-    let earliest = scheduled
-        .iter()
-        .filter(|state| state.active)
-        .map(|state| state.next_due)
-        .min()?;
-
     let len = scheduled.len();
+    if len == 0 {
+        return None;
+    }
+
+    let mut best: Option<(usize, Instant)> = None;
     for offset in 0..len {
         let index = (start_index + offset) % len;
         let state = &scheduled[index];
-        if state.active && state.next_due == earliest {
-            return Some((index, earliest));
+        if !state.active {
+            continue;
+        }
+        if best
+            .map(|(_, best_due)| state.next_due < best_due)
+            .unwrap_or(true)
+        {
+            best = Some((index, state.next_due));
         }
     }
 
-    None
+    best
 }
 
 fn next_scheduled_due(previous_due: Instant, delay: Duration) -> Instant {

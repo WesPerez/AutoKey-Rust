@@ -78,21 +78,6 @@ pub fn render_icon_rgba_at_unbadged(size: usize, is_running: bool) -> Vec<u8> {
     render_icon_rgba_at_with_badge(size, is_running, crate::config::DEFAULT_CONFIG_NAME, false)
 }
 
-/// Render a multi-size ICO containing the badge-bearing runtime icon.
-#[allow(dead_code)]
-pub fn render_icon_ico(is_running: bool, config_name: &str) -> Vec<u8> {
-    let images: Vec<(usize, Vec<u8>)> = ICO_SIZES
-        .iter()
-        .copied()
-        .map(|size| {
-            let rgba = render_icon_rgba_at(size, is_running, config_name);
-            (size, encode_bmp_icon_image(size, rgba))
-        })
-        .collect();
-
-    encode_ico_images(images)
-}
-
 /// Render a multi-size ICO without a config badge.
 pub fn render_icon_ico_unbadged(is_running: bool) -> Vec<u8> {
     let images: Vec<(usize, Vec<u8>)> = ICO_SIZES

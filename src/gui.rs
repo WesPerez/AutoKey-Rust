@@ -153,15 +153,27 @@ fn create_hicon_from_rgba(size: u32, rgba: &[u8]) -> Option<isize> {
 }
 
 /// Update the taskbar icon by sending WM_SETICON to the main window.
-fn update_taskbar_icon(is_running: bool, old_hicon: &mut Option<isize>) -> bool {
-    let Some(hicon) = create_hicon(is_running) else {
+fn update_taskbar_icons(
+    is_running: bool,
+    config_name: &str,
+    taskbar_hicon: &mut Option<isize>,
+    taskbar_overlay_hicon: &mut Option<isize>,
+) -> bool {
+    let Some(hwnd) = crate::window::find_own_hwnd() else {
         return false;
     };
 
-    let Some(hwnd) = crate::window::find_own_hwnd() else {
-        unsafe {
-            let _ = DestroyIcon(HICON(hicon as *mut _));
-        }
+    let base_icon_ok = update_taskbar_icon(hwnd, is_running, taskbar_hicon);
+    let overlay_ok =
+        update_taskbar_overlay_icon(hwnd, is_running, config_name, taskbar_overlay_hicon);
+    let relaunch_ok = update_taskbar_relaunch_icon_resource(hwnd, is_running, config_name);
+
+    base_icon_ok && overlay_ok && relaunch_ok
+}
+
+/// Update the taskbar icon by sending WM_SETICON to the main window.
+fn update_taskbar_icon(hwnd: isize, is_running: bool, old_hicon: &mut Option<isize>) -> bool {
+    let Some(hicon) = create_hicon(is_running) else {
         return false;
     };
 
@@ -182,13 +194,11 @@ fn update_taskbar_icon(is_running: bool, old_hicon: &mut Option<isize>) -> bool 
 }
 
 fn update_taskbar_overlay_icon(
+    hwnd: isize,
     is_running: bool,
     config_name: &str,
     old_hicon: &mut Option<isize>,
 ) -> bool {
-    let Some(hwnd) = crate::window::find_own_hwnd() else {
-        return false;
-    };
     let Some(hicon) = create_taskbar_overlay_hicon(is_running, config_name) else {
         return false;
     };
@@ -232,11 +242,7 @@ fn update_taskbar_overlay_icon(
     }
 }
 
-fn update_taskbar_relaunch_icon_resource(is_running: bool, config_name: &str) -> bool {
-    let Some(hwnd) = crate::window::find_own_hwnd() else {
-        return false;
-    };
-
+fn update_taskbar_relaunch_icon_resource(hwnd: isize, is_running: bool, config_name: &str) -> bool {
     let badge = crate::icon::config_badge_text(config_name);
     let status = if is_running { "running" } else { "stopped" };
     let icon_path = crate::config::app_directory().join(format!("taskbar-{status}-{badge}.ico"));
@@ -1345,11 +1351,12 @@ impl eframe::App for AutoKeyApp {
                 self.last_icon_attempt = Some((state.clone(), Instant::now()));
                 let icon = create_window_icon(running);
                 ctx.send_viewport_cmd(egui::ViewportCommand::Icon(Some(Arc::new(icon))));
-                let base_icon_ok = update_taskbar_icon(running, &mut self.taskbar_hicon);
-                let overlay_ok =
-                    update_taskbar_overlay_icon(running, &name, &mut self.taskbar_overlay_hicon);
-                let _ = update_taskbar_relaunch_icon_resource(running, &name);
-                if base_icon_ok && overlay_ok {
+                if update_taskbar_icons(
+                    running,
+                    &name,
+                    &mut self.taskbar_hicon,
+                    &mut self.taskbar_overlay_hicon,
+                ) {
                     self.last_icon_state = Some(state);
                 }
             }
