@@ -1,3 +1,5 @@
+注意：本文件是历史讨论与上一轮实现记录，不是当前实现说明。当前行为以 README.md、DETECTION_AUDIT.md 和 src/ 源码为准。
+
 E:\Project\Common\AutoKey上一个项目 
 E:\Project\Common\AutoKey-Rust\autokeyrust.txt   上一版本的文本    我觉得很多问题   你加上自己的多思考  关注我文档里最开始的核心需求   我就是要防检测加上一版已经有了的按键功能  你仔细对比  回归我的本质问题
 

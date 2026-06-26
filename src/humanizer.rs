@@ -4,7 +4,6 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU8, Ordering};
 
 const MINIMUM_DELAY: u32 = 20;
-const FATIGUE_THRESHOLD: u32 = 12;
 
 // ── Delay correlation model ─────────────────────────────────────────
 // Discretizes delay values into NUM_STATES buckets and uses a first-order
@@ -73,7 +72,6 @@ impl MarkovChain {
 struct DelayState {
     last_delay: u32,
     consecutive_count: u8,
-    keystrokes_since_pause: u32,
     tempo_factor: f64,
 }
 
@@ -158,39 +156,14 @@ pub fn next_delay(base_delay: u32, random_range: u32, profile_id: usize) -> u32 
         delay = (f64::from(delay) * state.tempo_factor)
             .round()
             .clamp(f64::from(min_delay), f64::from(max_delay)) as u32;
+    }
 
-        state.keystrokes_since_pause = state.keystrokes_since_pause.saturating_add(1);
-        let pause_probability =
-            (f64::from(state.keystrokes_since_pause) / f64::from(FATIGUE_THRESHOLD) * 0.06)
-                .min(0.18);
-        if fastrand::f64() < pause_probability {
-            let fatigue_factor = (state.keystrokes_since_pause / 5).min(4);
-            delay = delay.saturating_add(fastrand::u32(35..(75 + fatigue_factor * 25)));
-            state.keystrokes_since_pause = 0;
-        }
+    if level >= 2 && random_range > 0 {
+        delay = apply_micro_variation(delay, min_delay, max_delay);
     }
 
     state.last_delay = delay;
     delay
-}
-
-pub fn next_pre_press_delay(profile_id: usize) -> u32 {
-    if VARIABILITY_LEVEL.load(Ordering::Acquire) <= 1 {
-        return 0;
-    }
-
-    let mut timing = STATE.lock();
-    timing
-        .delay_states
-        .entry(profile_id)
-        .or_insert_with(DelayState::with_defaults);
-    if fastrand::f64() < 0.025 {
-        fastrand::u32(8..32)
-    } else if fastrand::f64() < 0.004 {
-        fastrand::u32(80..180)
-    } else {
-        0
-    }
 }
 
 pub fn next_press_duration() -> u32 {
@@ -283,6 +256,34 @@ fn nudge_away(
     delay
 }
 
+fn apply_micro_variation(delay: u32, min_delay: u32, max_delay: u32) -> u32 {
+    if min_delay >= max_delay {
+        return delay;
+    }
+
+    let roll = fastrand::f64();
+    let step = if roll < 0.004 {
+        fastrand::u32(80..=180)
+    } else if roll < 0.029 {
+        fastrand::u32(8..=32)
+    } else {
+        return delay;
+    };
+
+    let up = max_delay.saturating_sub(delay);
+    let down = delay.saturating_sub(min_delay);
+    if fastrand::bool() {
+        if up > 0 {
+            return delay.saturating_add(step.min(up));
+        }
+        return delay.saturating_sub(step.min(down));
+    }
+    if down > 0 {
+        return delay.saturating_sub(step.min(down));
+    }
+    delay.saturating_add(step.min(up))
+}
+
 fn next_gaussian(state: &mut TimingState) -> f64 {
     if let Some(spare) = state.spare_gaussian.take() {
         return spare;
@@ -330,17 +331,16 @@ mod tests {
         }
         assert!(changed);
         assert_eq!(next_press_duration(), 45);
-        assert_eq!(next_pre_press_delay(0), 0);
     }
 
     #[test]
-    fn level_two_short_pauses_remain_bounded() {
+    fn level_two_keeps_configured_random_range() {
         let _guard = TEST_LOCK.lock();
         reset();
         set_timing_variation_level(2);
         for _ in 0..2000 {
             let delay = next_delay(1000, 200, 0);
-            assert!((800..=1374).contains(&delay));
+            assert!((800..=1200).contains(&delay));
         }
     }
 

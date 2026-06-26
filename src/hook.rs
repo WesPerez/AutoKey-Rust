@@ -187,7 +187,12 @@ fn handle_keyboard_event(event: &KBDLLHOOKSTRUCT, message: u32) -> bool {
     let mut suppress_current_event = false;
 
     if is_key_down {
-        let inserted = PRESSED_KEYS.lock().insert(vk);
+        let (inserted, others_held) = {
+            let mut pressed = PRESSED_KEYS.lock();
+            let inserted = pressed.insert(vk);
+            let others_held = is_left_alt && inserted && pressed.iter().any(|&k| k != VK_ALT);
+            (inserted, others_held)
+        };
 
         // Left-Alt-as-toggle state machine.
         //
@@ -205,7 +210,6 @@ fn handle_keyboard_event(event: &KBDLLHOOKSTRUCT, message: u32) -> bool {
         if is_left_alt {
             if !LEFT_ALT_DOWN.swap(true, Ordering::Relaxed) {
                 // Solo is only possible if no other key is currently held.
-                let others_held = PRESSED_KEYS.lock().iter().any(|&k| k != VK_ALT);
                 LEFT_ALT_SOLO.store(!others_held, Ordering::Relaxed);
                 // Suppress the Alt key-down only when it's potentially solo and
                 // the foreground window is NOT our own app. When our window is
@@ -256,24 +260,24 @@ fn handle_keyboard_event(event: &KBDLLHOOKSTRUCT, message: u32) -> bool {
         }
 
         if inserted && !HOTKEY_FIRED.load(Ordering::Relaxed) {
-            let pressed = PRESSED_KEYS
-                .lock()
-                .iter()
-                .copied()
-                .map(normalize_vk)
-                .collect();
+            let pressed_keys: Vec<u16> = PRESSED_KEYS.lock().iter().copied().collect();
+            let pressed = pressed_keys.iter().copied().map(normalize_vk).collect();
             if handle_registered_hotkey(&pressed) {
                 HOTKEY_FIRED.store(true, Ordering::Relaxed);
                 LEFT_ALT_SOLO.store(false, Ordering::Relaxed);
                 let mut suppressed = SUPPRESSED_KEYS.lock();
-                for &vk in PRESSED_KEYS.lock().iter() {
+                for vk in pressed_keys {
                     suppressed.insert(vk);
                 }
             }
         }
     } else if is_key_up {
-        PRESSED_KEYS.lock().remove(&vk);
-        if !is_modifier(vk) || PRESSED_KEYS.lock().is_empty() {
+        let pressed_empty = {
+            let mut pressed = PRESSED_KEYS.lock();
+            pressed.remove(&vk);
+            pressed.is_empty()
+        };
+        if !is_modifier(vk) || pressed_empty {
             HOTKEY_FIRED.store(false, Ordering::Relaxed);
         }
 

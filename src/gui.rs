@@ -1392,8 +1392,13 @@ impl eframe::App for AutoKeyApp {
         self.render_key_table(ctx);
         self.render_status_bar(ctx);
 
-        // Keep the event loop alive so tray.poll() keeps being called
-        ctx.request_repaint_after(Duration::from_millis(200));
+        let repaint_after =
+            if self.is_running.load(Ordering::Acquire) || self.capturing_key.is_some() {
+                Duration::from_millis(200)
+            } else {
+                Duration::from_millis(750)
+            };
+        ctx.request_repaint_after(repaint_after);
     }
 }
 

@@ -9,11 +9,11 @@ if errorlevel 1 (
 )
 
 echo Running tests...
-cargo test --all-targets
+cargo test --locked --all-targets
 if errorlevel 1 exit /b 1
 
 echo Building release executable...
-cargo build --release
+cargo build --locked --release
 if errorlevel 1 exit /b 1
 
 echo Done: %CD%\target\release\AutoKeyRust.exe

@@ -385,7 +385,7 @@ fn wait_interruptible(
     let deadline_ns = HI_RES_TIMER
         .now_ns()
         .saturating_add(duration.as_nanos() as u64);
-    const SPIN_THRESHOLD_NS: u64 = 500_000;
+    const SPIN_THRESHOLD_NS: u64 = 200_000;
     const MAX_SLEEP_SLICE: Duration = Duration::from_millis(20);
 
     loop {
@@ -440,6 +440,7 @@ fn run_sequential(
     loop {
         for key in keys {
             set_key_running(key_running, key.index, true);
+            let started_at = Instant::now();
             match perform_press(commands, key, is_running, bound_window, status) {
                 Ok(control) => {
                     if control != Control::Continue {
@@ -454,8 +455,8 @@ fn run_sequential(
                 }
             }
 
-            let control =
-                wait_interruptible(calculate_delay(config, key), commands, is_running, status);
+            let next_due = next_scheduled_due(started_at, calculate_delay(config, key));
+            let control = wait_until_interruptible(next_due, commands, is_running, status);
             set_key_running(key_running, key.index, false);
             if control != Control::Continue {
                 return control;
@@ -476,12 +477,6 @@ fn perform_press(
     bound_window: &RwLock<Option<isize>>,
     status: &RwLock<String>,
 ) -> Result<Control> {
-    let pre_press = Duration::from_millis(humanizer::next_pre_press_delay(key.index) as u64);
-    let control = wait_interruptible(pre_press, commands, is_running, status);
-    if control != Control::Continue {
-        return Ok(control);
-    }
-
     let target = match *bound_window.read() {
         Some(hwnd) => InputTarget::Window(hwnd),
         None => InputTarget::Foreground,
