@@ -575,6 +575,7 @@ impl AutoKeyApp {
             } else {
                 self.preferences.write().selected_config = name.clone();
                 self.profile_name_edit = name.clone();
+                self.last_saved_config = self.config.read().clone();
                 *self.status.write() = format!("已切换到配置 [{name}]");
                 self.refresh_profiles_and_hotkeys();
             }
@@ -995,6 +996,7 @@ impl AutoKeyApp {
                     Ok(saved_name) => {
                         self.preferences.write().selected_config = saved_name.clone();
                         self.profile_name_edit = saved_name;
+                        self.last_saved_config = self.config.read().clone();
                         *self.status.write() =
                             "\u{914d}\u{7f6e}\u{5df2}\u{4fdd}\u{5b58}".to_owned();
                         self.refresh_profiles_and_hotkeys();
@@ -1010,6 +1012,7 @@ impl AutoKeyApp {
                 match load_into(&name, &self.config) {
                     Ok(()) => {
                         self.preferences.write().selected_config = name.clone();
+                        self.last_saved_config = self.config.read().clone();
                         *self.status.write() =
                             format!("\u{5df2}\u{52a0}\u{8f7d}\u{914d}\u{7f6e} [{name}]");
                         self.refresh_profiles_and_hotkeys();
@@ -1028,7 +1031,9 @@ impl AutoKeyApp {
                             self.preferences.write().selected_config =
                                 DEFAULT_CONFIG_NAME.to_owned();
                             self.profile_name_edit = DEFAULT_CONFIG_NAME.to_owned();
-                            let _ = load_into(DEFAULT_CONFIG_NAME, &self.config);
+                            if load_into(DEFAULT_CONFIG_NAME, &self.config).is_ok() {
+                                self.last_saved_config = self.config.read().clone();
+                            }
                         }
                         *self.status.write() =
                             format!("\u{5df2}\u{5220}\u{9664}\u{914d}\u{7f6e} [{name}]");
@@ -1060,6 +1065,7 @@ impl AutoKeyApp {
                 } else {
                     self.preferences.write().selected_config = selected.clone();
                     self.profile_name_edit = selected;
+                    self.last_saved_config = self.config.read().clone();
                     self.refresh_profiles_and_hotkeys();
                 }
             }

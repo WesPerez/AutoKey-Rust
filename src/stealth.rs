@@ -209,11 +209,13 @@ static DEBUGGER_DETECTED: std::sync::atomic::AtomicBool = std::sync::atomic::Ato
 static ANALYSIS_DETECTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Returns true if a debugger was detected at startup.
+#[allow(dead_code)]
 pub fn is_debugger_detected() -> bool {
     DEBUGGER_DETECTED.load(std::sync::atomic::Ordering::Acquire)
 }
 
 /// Returns true if analysis tools were detected at startup.
+#[allow(dead_code)]
 pub fn is_analysis_detected() -> bool {
     ANALYSIS_DETECTED.load(std::sync::atomic::Ordering::Acquire)
 }

@@ -169,21 +169,21 @@ pub fn next_delay(base_delay: u32, random_range: u32, profile_id: usize) -> u32 
 pub fn next_press_duration() -> u32 {
     let level = VARIABILITY_LEVEL.load(Ordering::Acquire);
     if level == 0 {
-        return 45;
+        return 25;
     }
 
     let mut timing = STATE.lock();
     let gaussian = next_gaussian(&mut timing).abs();
     let mut duration = if fastrand::f64() < 0.85 {
-        35 + (gaussian * 12.0) as u32
+        22 + (gaussian * 8.0) as u32
     } else {
-        80 + (gaussian * 30.0) as u32
+        45 + (gaussian * 18.0) as u32
     };
-    duration = duration.clamp(20, 200);
+    duration = duration.clamp(18, 100);
 
     if duration == timing.last_press_duration {
         let adjustment = fastrand::u32(2..8) as i32 * if fastrand::bool() { 1 } else { -1 };
-        duration = (duration as i32 + adjustment).clamp(20, 200) as u32;
+        duration = (duration as i32 + adjustment).clamp(18, 100) as u32;
     }
     timing.last_press_duration = duration;
     duration
@@ -330,7 +330,23 @@ mod tests {
             changed |= delay != 500;
         }
         assert!(changed);
-        assert_eq!(next_press_duration(), 45);
+        assert_eq!(next_press_duration(), 25);
+    }
+
+    #[test]
+    fn press_duration_stays_short_but_randomized() {
+        let _guard = TEST_LOCK.lock();
+        reset();
+        set_timing_variation_level(2);
+        let mut changed = false;
+        let mut last = 0;
+        for _ in 0..300 {
+            let duration = next_press_duration();
+            assert!((18..=100).contains(&duration));
+            changed |= last != 0 && duration != last;
+            last = duration;
+        }
+        assert!(changed);
     }
 
     #[test]

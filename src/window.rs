@@ -12,7 +12,7 @@ pub struct WindowInfo {
 
 pub fn is_window_valid(hwnd: isize) -> bool {
     // SAFETY: IsWindow only inspects this opaque handle value.
-    !hwnd.is_negative() && unsafe { IsWindow(HWND(hwnd as *mut _)).as_bool() }
+    hwnd != 0 && unsafe { IsWindow(HWND(hwnd as *mut _)).as_bool() }
 }
 
 pub fn is_own_process_window(hwnd: isize) -> bool {
