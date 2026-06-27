@@ -23,22 +23,28 @@ pub fn random_extra_info() -> usize {
 
 // ── PostMessage lParam randomization ──────────────────────────────────
 
-/// Randomize the unused/reserved bits of a WM_KEYDOWN / WM_KEYUP lParam.
+const REPEAT_COUNT_MASK: u32 = 0x0000_FFFF;
+const RESERVED_BITS_MASK: u32 = 0x0F << 25;
+const KEYDOWN_REPEAT_BUMP_RATE: f64 = 0.03;
+
+/// Randomize low-risk metadata of a background `WM_KEYDOWN` lParam.
 ///
-/// We randomize bits 25-28 (reserved) and occasionally bump the repeat
-/// count to 2 to simulate a held key. We do NOT touch bit 29 because
-/// setting it would make the target app interpret the key as Alt+Key.
+/// Key-down messages get reserved-bit noise and occasionally use repeat count
+/// 2. Key-up messages stay standard so release semantics remain predictable.
+/// We do NOT touch scan code, extended-key, Alt/context, or key state bits.
 #[inline]
 pub fn randomize_lparam(bits: u32, is_key_up: bool) -> isize {
+    if is_key_up {
+        return bits as isize;
+    }
+
     let mut lparam = bits;
 
-    // Randomize reserved bits 25-28 with noise
-    let reserved_noise = (fastrand::u32(..) & 0xF) << 25;
-    lparam = (lparam & !(0xF << 25)) | reserved_noise;
+    let reserved_noise = (fastrand::u32(..) & 0x0F) << 25;
+    lparam = (lparam & !RESERVED_BITS_MASK) | reserved_noise;
 
-    // For keydown events, occasionally set repeat count to 2 (~3% of the time)
-    if !is_key_up && fastrand::f64() < 0.03 {
-        lparam = (lparam & !0xFFFF) | 2;
+    if fastrand::f64() < KEYDOWN_REPEAT_BUMP_RATE {
+        lparam = (lparam & !REPEAT_COUNT_MASK) | 2;
     }
 
     lparam as isize
@@ -224,6 +230,12 @@ pub fn is_analysis_detected() -> bool {
 mod tests {
     use super::*;
 
+    const SCAN_CODE_MASK: u32 = 0x00FF_0000;
+    const EXTENDED_KEY_BIT: u32 = 1 << 24;
+    const ALT_CONTEXT_BIT: u32 = 1 << 29;
+    const PREVIOUS_STATE_BIT: u32 = 1 << 30;
+    const TRANSITION_STATE_BIT: u32 = 1 << 31;
+
     #[test]
     fn extra_info_in_qpc_range() {
         for _ in 0..100 {
@@ -237,16 +249,15 @@ mod tests {
     fn lparam_preserves_key_bits() {
         let bits: u32 = 1 | (0x1E << 16);
         let result = randomize_lparam(bits, false) as u32;
-        assert_eq!((result >> 16) & 0xFF, 0x1E);
+        assert_eq!(result & SCAN_CODE_MASK, bits & SCAN_CODE_MASK);
+        assert_eq!(result & EXTENDED_KEY_BIT, bits & EXTENDED_KEY_BIT);
     }
 
     #[test]
     fn lparam_keyup_bits_preserved() {
-        let bits: u32 = 1 | (0x1E << 16) | (1 << 30) | (1 << 31);
+        let bits: u32 = 1 | (0x1E << 16) | PREVIOUS_STATE_BIT | TRANSITION_STATE_BIT;
         let result = randomize_lparam(bits, true) as u32;
-        assert_eq!(result & (1 << 30), 1 << 30);
-        assert_eq!(result & (1 << 31), 1 << 31);
-        assert_eq!((result >> 16) & 0xFF, 0x1E);
+        assert_eq!(result, bits);
     }
 
     #[test]
@@ -254,7 +265,34 @@ mod tests {
         for _ in 0..1000 {
             let bits: u32 = 1 | (0x1E << 16);
             let result = randomize_lparam(bits, false) as u32;
-            assert_eq!(result & (1 << 29), 0, "bit 29 was set — triggers Alt+key shortcuts!");
+            assert_eq!(
+                result & ALT_CONTEXT_BIT,
+                0,
+                "bit 29 was set — triggers Alt+key shortcuts!"
+            );
+        }
+    }
+
+    #[test]
+    fn lparam_keydown_repeat_count_is_one_or_two() {
+        for _ in 0..1000 {
+            let bits: u32 = 1 | (0x1E << 16);
+            let result = randomize_lparam(bits, false) as u32;
+            assert!(matches!(result & REPEAT_COUNT_MASK, 1 | 2));
+        }
+    }
+
+    #[test]
+    fn lparam_keydown_keeps_semantic_bits() {
+        let bits: u32 = 1 | (0xE0 << 16) | EXTENDED_KEY_BIT;
+        let semantic_mask = SCAN_CODE_MASK
+            | EXTENDED_KEY_BIT
+            | ALT_CONTEXT_BIT
+            | PREVIOUS_STATE_BIT
+            | TRANSITION_STATE_BIT;
+        for _ in 0..1000 {
+            let result = randomize_lparam(bits, false) as u32;
+            assert_eq!(result & semantic_mask, bits & semantic_mask);
         }
     }
 

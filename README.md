@@ -73,7 +73,7 @@ target\release\AutoKeyRust.exe
 
 ## 输入与安全边界
 
-本项目的按键发送只使用公开、标准的 Windows 输入接口。前台主按键输入使用 `SendInput`，后台窗口输入使用 `PostMessage`；当前源码会对主按键 `SendInput` 的 `dwExtraInfo` 和后台 `PostMessage` 的部分 `lParam` 位做随机扰动。Hook 内部用于释放修饰键或回放 Alt 状态的少量辅助 `SendInput` 事件仍使用 `dwExtraInfo = 0`。
+本项目的按键发送只使用公开、标准的 Windows 输入接口。前台主按键输入使用 `SendInput`，后台窗口输入使用 `PostMessage`；当前源码会对主按键 `SendInput` 的 `dwExtraInfo` 和后台 `PostMessage` keydown 的部分 `lParam` 位做随机扰动。Hook 内部用于释放修饰键或回放 Alt 状态的少量辅助 `SendInput` 事件仍使用 `dwExtraInfo = 0`。
 
 当前源码还包含部分运行时标识扰动，例如编译期字符串异或、随机线程名、启动时调试器/分析工具标志检测；这些是当前实现状态，不代表能够规避目标软件、安全软件或系统级检测。
 
