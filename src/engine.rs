@@ -4,7 +4,7 @@ use crate::{humanizer, input, window, AppCommand};
 use anyhow::{Context, Result};
 use parking_lot::RwLock;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Receiver, RecvTimeoutError, TryRecvError};
+use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, TryRecvError};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -190,10 +190,10 @@ fn run_engine(
                 &commands,
                 &snapshot,
                 keys,
-                &is_running,
-                &key_running,
-                &bound_window,
-                &status,
+                is_running.clone(),
+                key_running.clone(),
+                bound_window.clone(),
+                status.clone(),
             )
         } else {
             run_sequential(
@@ -225,110 +225,137 @@ fn run_independent(
     commands: &Receiver<AppCommand>,
     config: &Config,
     keys: Vec<RunKey>,
+    is_running: Arc<AtomicBool>,
+    key_running: Arc<RwLock<Vec<bool>>>,
+    bound_window: Arc<RwLock<Option<isize>>>,
+    status: Arc<RwLock<String>>,
+) -> Control {
+    let stop_workers = Arc::new(AtomicBool::new(false));
+    let (done_tx, done_rx) = channel();
+    let mut workers = Vec::with_capacity(keys.len());
+
+    for key in keys {
+        set_key_running(&key_running, key.index, true);
+        let worker_config = config.clone();
+        let worker_running = is_running.clone();
+        let worker_stop = stop_workers.clone();
+        let worker_key_running = key_running.clone();
+        let worker_bound_window = bound_window.clone();
+        let worker_status = status.clone();
+        let worker_done = done_tx.clone();
+        let key_index = key.index;
+
+        match thread::Builder::new()
+            .name(crate::stealth::random_thread_name())
+            .spawn(move || {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    run_independent_key(
+                        &worker_config,
+                        &key,
+                        &worker_running,
+                        &worker_stop,
+                        &worker_bound_window,
+                        &worker_status,
+                    )
+                }));
+                let control = result.unwrap_or_else(|_| {
+                    worker_running.store(false, Ordering::Release);
+                    worker_stop.store(true, Ordering::Release);
+                    *worker_status.write() = "key worker thread panicked".to_owned();
+                    Control::Stop
+                });
+                set_key_running(&worker_key_running, key_index, false);
+                let _ = worker_done.send(control);
+            }) {
+            Ok(worker) => workers.push(worker),
+            Err(error) => {
+                stop_independent_workers(&stop_workers, &is_running, workers);
+                *status.write() = format!("failed to start key worker thread: {error}");
+                return Control::Stop;
+            }
+        }
+    }
+    drop(done_tx);
+
+    let mut remaining = workers.len();
+    while remaining > 0 {
+        while let Ok(control) = done_rx.try_recv() {
+            remaining -= 1;
+            if control != Control::Continue {
+                stop_independent_workers(&stop_workers, &is_running, workers);
+                return control;
+            }
+        }
+
+        match commands.recv_timeout(Duration::from_millis(20)) {
+            Ok(AppCommand::Start) | Err(RecvTimeoutError::Timeout) => {}
+            Ok(AppCommand::Exit) | Err(RecvTimeoutError::Disconnected) => {
+                stop_independent_workers(&stop_workers, &is_running, workers);
+                return Control::Exit;
+            }
+            Ok(AppCommand::Stop) | Ok(AppCommand::ToggleRunning) => {
+                stop_independent_workers(&stop_workers, &is_running, workers);
+                return Control::Stop;
+            }
+        }
+    }
+
+    for worker in workers {
+        let _ = worker.join();
+    }
+    Control::Continue
+}
+
+fn run_independent_key(
+    config: &Config,
+    key: &RunKey,
     is_running: &AtomicBool,
-    key_running: &RwLock<Vec<bool>>,
+    stop: &AtomicBool,
     bound_window: &RwLock<Option<isize>>,
     status: &RwLock<String>,
 ) -> Control {
-    let mut scheduled: Vec<ScheduledKey> = keys
-        .into_iter()
-        .map(|key| {
-            set_key_running(key_running, key.index, true);
-            ScheduledKey {
-                key,
-                next_due: Instant::now(),
-                completed: 0,
-                active: true,
-            }
-        })
-        .collect();
-    let mut next_search_index = 0usize;
+    let mut completed = 0u32;
+    let mut next_due = Instant::now();
 
-    while scheduled.iter().any(|state| state.active) {
-        let Some((index, next_due)) = next_due_key(&scheduled, next_search_index) else {
-            break;
-        };
-        next_search_index = (index + 1) % scheduled.len();
-
-        match wait_until_interruptible(next_due, commands, is_running, status) {
+    loop {
+        match wait_until_running(next_due, is_running, stop) {
             Control::Continue => {}
             control => return control,
         }
 
-        if !scheduled[index].active {
-            continue;
-        }
-
-        match perform_press(
-            commands,
-            &scheduled[index].key,
-            is_running,
-            bound_window,
-            status,
-        ) {
+        match perform_press_running(key, is_running, stop, bound_window) {
             Ok(Control::Continue) => {
-                scheduled[index].completed = scheduled[index].completed.saturating_add(1);
-                if reached_limit(config.max_loops, scheduled[index].completed) {
-                    scheduled[index].active = false;
-                    set_key_running(key_running, scheduled[index].key.index, false);
-                } else {
-                    scheduled[index].next_due = next_scheduled_due(
-                        scheduled[index].next_due,
-                        calculate_delay(config, &scheduled[index].key),
-                    );
+                completed = completed.saturating_add(1);
+                if reached_limit(config.max_loops, completed) {
+                    return Control::Continue;
                 }
+                next_due = next_scheduled_due(next_due, calculate_delay(config, key));
             }
             Ok(control) => return control,
             Err(error) => {
-                handle_send_error(&scheduled[index].key, error, bound_window, status);
+                handle_send_error(key, error, bound_window, status);
                 if config.max_loops >= 0 {
-                    scheduled[index].active = false;
-                    set_key_running(key_running, scheduled[index].key.index, false);
-                } else {
-                    match wait_interruptible(RECOVERY_DELAY, commands, is_running, status) {
-                        Control::Continue => {
-                            scheduled[index].next_due = Instant::now();
-                        }
-                        control => return control,
-                    }
+                    return Control::Continue;
+                }
+                match wait_running_interruptible(RECOVERY_DELAY, is_running, stop) {
+                    Control::Continue => next_due = Instant::now(),
+                    control => return control,
                 }
             }
         }
     }
-
-    Control::Continue
 }
 
-#[derive(Debug, Clone)]
-struct ScheduledKey {
-    key: RunKey,
-    next_due: Instant,
-    completed: u32,
-    active: bool,
-}
-
-fn next_due_key(scheduled: &[ScheduledKey], start_index: usize) -> Option<(usize, Instant)> {
-    let len = scheduled.len();
-    if len == 0 {
-        return None;
+fn stop_independent_workers(
+    stop_workers: &AtomicBool,
+    is_running: &AtomicBool,
+    workers: Vec<JoinHandle<()>>,
+) {
+    stop_workers.store(true, Ordering::Release);
+    is_running.store(false, Ordering::Release);
+    for worker in workers {
+        let _ = worker.join();
     }
-
-    let mut best: Option<(usize, Instant)> = None;
-    for offset in 0..len {
-        let index = (start_index + offset) % len;
-        let state = &scheduled[index];
-        if !state.active {
-            continue;
-        }
-        if best
-            .map(|(_, best_due)| state.next_due < best_due)
-            .unwrap_or(true)
-        {
-            best = Some((index, state.next_due));
-        }
-    }
-
-    best
 }
 
 fn next_scheduled_due(previous_due: Instant, delay: Duration) -> Instant {
@@ -427,6 +454,70 @@ fn wait_interruptible(
         std::hint::spin_loop();
     }
 }
+
+fn wait_until_running(deadline: Instant, is_running: &AtomicBool, stop: &AtomicBool) -> Control {
+    let now = Instant::now();
+    if deadline <= now {
+        return running_control(is_running, stop);
+    }
+    wait_running_interruptible(deadline.duration_since(now), is_running, stop)
+}
+
+fn wait_running_interruptible(
+    duration: Duration,
+    is_running: &AtomicBool,
+    stop: &AtomicBool,
+) -> Control {
+    if duration.is_zero() {
+        return running_control(is_running, stop);
+    }
+
+    let deadline_ns = HI_RES_TIMER
+        .now_ns()
+        .saturating_add(duration.as_nanos() as u64);
+    const SPIN_THRESHOLD_NS: u64 = 200_000;
+    const MAX_SLEEP_SLICE: Duration = Duration::from_millis(20);
+
+    loop {
+        match running_control(is_running, stop) {
+            Control::Continue => {}
+            control => return control,
+        }
+
+        let now = HI_RES_TIMER.now_ns();
+        if now >= deadline_ns {
+            return Control::Continue;
+        }
+
+        let remaining_ns = deadline_ns - now;
+        if remaining_ns <= SPIN_THRESHOLD_NS {
+            break;
+        }
+
+        let sleep_ns = (remaining_ns - SPIN_THRESHOLD_NS).min(MAX_SLEEP_SLICE.as_nanos() as u64);
+        thread::sleep(Duration::from_nanos(sleep_ns));
+    }
+
+    loop {
+        match running_control(is_running, stop) {
+            Control::Continue => {}
+            control => return control,
+        }
+        if HI_RES_TIMER.now_ns() >= deadline_ns {
+            return Control::Continue;
+        }
+        std::hint::spin_loop();
+    }
+}
+
+fn running_control(is_running: &AtomicBool, stop: &AtomicBool) -> Control {
+    if stop.load(Ordering::Acquire) || !is_running.load(Ordering::Acquire) {
+        Control::Stop
+    } else {
+        Control::Continue
+    }
+}
+
 fn run_sequential(
     commands: &Receiver<AppCommand>,
     config: &Config,
@@ -487,6 +578,27 @@ fn perform_press(
         commands,
         is_running,
         status,
+    );
+    let key_up_result = input::key_up(target, key.config.vk_code);
+    key_up_result?;
+    Ok(control)
+}
+
+fn perform_press_running(
+    key: &RunKey,
+    is_running: &AtomicBool,
+    stop: &AtomicBool,
+    bound_window: &RwLock<Option<isize>>,
+) -> Result<Control> {
+    let target = match *bound_window.read() {
+        Some(hwnd) => InputTarget::Window(hwnd),
+        None => InputTarget::Foreground,
+    };
+    input::key_down(target, key.config.vk_code)?;
+    let control = wait_running_interruptible(
+        Duration::from_millis(humanizer::next_press_duration() as u64),
+        is_running,
+        stop,
     );
     let key_up_result = input::key_up(target, key.config.vk_code);
     key_up_result?;
@@ -576,87 +688,6 @@ mod tests {
             let delay = calculate_delay(&config, &key).as_millis();
             assert!((700..=1300).contains(&delay));
         }
-    }
-
-    #[test]
-    fn next_due_key_ignores_inactive_keys() {
-        let now = Instant::now();
-        let scheduled = vec![
-            ScheduledKey {
-                key: RunKey {
-                    index: 0,
-                    config: KeyConfig::default(),
-                },
-                next_due: now,
-                completed: 0,
-                active: false,
-            },
-            ScheduledKey {
-                key: RunKey {
-                    index: 1,
-                    config: KeyConfig::default(),
-                },
-                next_due: now + Duration::from_millis(10),
-                completed: 0,
-                active: true,
-            },
-        ];
-
-        assert_eq!(next_due_key(&scheduled, 0).map(|(index, _)| index), Some(1));
-    }
-
-    #[test]
-    fn next_due_key_picks_earliest_active_key() {
-        let now = Instant::now();
-        let scheduled = vec![
-            ScheduledKey {
-                key: RunKey {
-                    index: 0,
-                    config: KeyConfig::default(),
-                },
-                next_due: now + Duration::from_millis(30),
-                completed: 0,
-                active: true,
-            },
-            ScheduledKey {
-                key: RunKey {
-                    index: 1,
-                    config: KeyConfig::default(),
-                },
-                next_due: now + Duration::from_millis(5),
-                completed: 0,
-                active: true,
-            },
-        ];
-
-        assert_eq!(next_due_key(&scheduled, 0).map(|(index, _)| index), Some(1));
-    }
-
-    #[test]
-    fn next_due_key_rotates_equal_deadlines() {
-        let now = Instant::now();
-        let scheduled = vec![
-            ScheduledKey {
-                key: RunKey {
-                    index: 0,
-                    config: KeyConfig::default(),
-                },
-                next_due: now,
-                completed: 0,
-                active: true,
-            },
-            ScheduledKey {
-                key: RunKey {
-                    index: 1,
-                    config: KeyConfig::default(),
-                },
-                next_due: now,
-                completed: 0,
-                active: true,
-            },
-        ];
-
-        assert_eq!(next_due_key(&scheduled, 1).map(|(index, _)| index), Some(1));
     }
 
     #[test]

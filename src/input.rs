@@ -86,12 +86,13 @@ fn send_input_event(vk_code: u16, is_key_up: bool) -> Result<()> {
             flags |= KEYEVENTF_EXTENDEDKEY;
         }
 
+        let scan_code = MapVirtualKeyW(vk_code as u32, MAPVK_VK_TO_VSC) as u16;
         let input = INPUT {
             r#type: INPUT_KEYBOARD,
             Anonymous: INPUT_0 {
                 ki: KEYBDINPUT {
                     wVk: VIRTUAL_KEY(vk_code),
-                    wScan: 0,
+                    wScan: scan_code,
                     dwFlags: flags,
                     time: 0,
                     dwExtraInfo: stealth::random_extra_info(),
