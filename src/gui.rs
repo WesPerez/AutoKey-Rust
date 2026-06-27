@@ -41,12 +41,20 @@ const CHINESE_FONT_CANDIDATES: &[&str] = &[
     r"C:\Windows\Fonts\simsun.ttc",
 ];
 
-// Sky blue color constants
-const SKY_BLUE_PRIMARY: egui::Color32 = egui::Color32::from_rgb(30, 136, 229); // #1E88E5
-const SKY_BLUE_DARK: egui::Color32 = egui::Color32::from_rgb(21, 101, 192); // #1565C0
-const SKY_BLUE_LIGHT: egui::Color32 = egui::Color32::from_rgb(227, 242, 253); // #E3F2FD
-const SKY_BLUE_VERY_LIGHT: egui::Color32 = egui::Color32::from_rgb(240, 248, 255); // #F0F8FF
-const SKY_BLUE_BG: egui::Color32 = egui::Color32::from_rgb(232, 245, 253); // #E8F5FD
+// Clean desktop-tool palette.
+const ACCENT_BLUE: egui::Color32 = egui::Color32::from_rgb(42, 111, 188);
+const ACCENT_BLUE_SOFT: egui::Color32 = egui::Color32::from_rgb(228, 240, 252);
+const APP_BG: egui::Color32 = egui::Color32::from_rgb(246, 248, 251);
+const PANEL_BG: egui::Color32 = egui::Color32::from_rgb(251, 252, 254);
+const HEADER_BG: egui::Color32 = egui::Color32::from_rgb(248, 251, 254);
+const BORDER: egui::Color32 = egui::Color32::from_rgb(214, 222, 232);
+const TEXT_PRIMARY: egui::Color32 = egui::Color32::from_rgb(36, 45, 56);
+const TEXT_SECONDARY: egui::Color32 = egui::Color32::from_rgb(96, 111, 128);
+const START_GREEN: egui::Color32 = egui::Color32::from_rgb(65, 174, 89);
+const START_GREEN_DARK: egui::Color32 = egui::Color32::from_rgb(48, 143, 70);
+const STOP_RED: egui::Color32 = egui::Color32::from_rgb(224, 83, 83);
+const STOP_RED_DARK: egui::Color32 = egui::Color32::from_rgb(191, 61, 61);
+const WARNING_ORANGE: egui::Color32 = egui::Color32::from_rgb(211, 104, 23);
 
 fn create_window_icon(is_running: bool) -> egui::IconData {
     let rgba = crate::icon::render_icon_rgba_unbadged(is_running);
@@ -305,46 +313,44 @@ fn install_chinese_font_fallback(ctx: &egui::Context) {
     ctx.set_fonts(fonts);
 }
 
-/// Configure a sky blue visual theme matching the original C# version.
+/// Configure a clean light visual theme for the desktop tool.
 fn setup_visuals(ctx: &egui::Context) {
     let mut visuals = egui::Visuals::light();
 
-    visuals.override_text_color = Some(egui::Color32::from_rgb(51, 51, 51));
+    visuals.override_text_color = Some(TEXT_PRIMARY);
 
-    visuals.widgets.noninteractive.bg_fill = SKY_BLUE_VERY_LIGHT;
-    visuals.widgets.noninteractive.weak_bg_fill = SKY_BLUE_VERY_LIGHT;
-    visuals.widgets.noninteractive.fg_stroke =
-        egui::Stroke::new(1.0, egui::Color32::from_rgb(170, 195, 220));
+    visuals.widgets.noninteractive.bg_fill = PANEL_BG;
+    visuals.widgets.noninteractive.weak_bg_fill = PANEL_BG;
+    visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, TEXT_SECONDARY);
 
     visuals.widgets.inactive.bg_fill = egui::Color32::WHITE;
-    visuals.widgets.inactive.weak_bg_fill = SKY_BLUE_LIGHT;
-    visuals.widgets.inactive.fg_stroke =
-        egui::Stroke::new(1.0, egui::Color32::from_rgb(60, 60, 60));
+    visuals.widgets.inactive.weak_bg_fill = egui::Color32::from_rgb(241, 245, 249);
+    visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, TEXT_PRIMARY);
     visuals.widgets.inactive.rounding = egui::Rounding::same(4.0);
 
-    visuals.widgets.hovered.bg_fill = SKY_BLUE_LIGHT;
-    visuals.widgets.hovered.weak_bg_fill = SKY_BLUE_LIGHT;
-    visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.0, SKY_BLUE_PRIMARY);
+    visuals.widgets.hovered.bg_fill = ACCENT_BLUE_SOFT;
+    visuals.widgets.hovered.weak_bg_fill = egui::Color32::from_rgb(218, 234, 249);
+    visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.0, ACCENT_BLUE);
     visuals.widgets.hovered.rounding = egui::Rounding::same(4.0);
 
-    visuals.widgets.active.bg_fill = SKY_BLUE_PRIMARY;
-    visuals.widgets.active.weak_bg_fill = SKY_BLUE_PRIMARY;
+    visuals.widgets.active.bg_fill = ACCENT_BLUE;
+    visuals.widgets.active.weak_bg_fill = ACCENT_BLUE;
     visuals.widgets.active.fg_stroke = egui::Stroke::new(1.0, egui::Color32::WHITE);
     visuals.widgets.active.rounding = egui::Rounding::same(4.0);
 
-    visuals.selection.bg_fill = SKY_BLUE_PRIMARY;
-    visuals.selection.stroke = egui::Stroke::new(1.0, SKY_BLUE_PRIMARY);
+    visuals.selection.bg_fill = ACCENT_BLUE;
+    visuals.selection.stroke = egui::Stroke::new(1.0, ACCENT_BLUE);
 
-    visuals.panel_fill = SKY_BLUE_VERY_LIGHT;
+    visuals.panel_fill = APP_BG;
     visuals.window_fill = egui::Color32::WHITE;
-    visuals.faint_bg_color = SKY_BLUE_BG;
+    visuals.faint_bg_color = egui::Color32::from_rgb(238, 243, 248);
 
     ctx.set_visuals(visuals);
 
     let mut style = (*ctx.style()).clone();
-    style.spacing.item_spacing = egui::vec2(8.0, 6.0);
-    style.spacing.button_padding = egui::vec2(10.0, 6.0);
-    style.spacing.interact_size = egui::vec2(40.0, 26.0);
+    style.spacing.item_spacing = egui::vec2(8.0, 7.0);
+    style.spacing.button_padding = egui::vec2(11.0, 6.0);
+    style.spacing.interact_size = egui::vec2(42.0, 28.0);
     ctx.set_style(style);
 }
 
@@ -748,11 +754,12 @@ impl AutoKeyApp {
 
     fn render_header(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("header")
-            .exact_height(52.0)
+            .exact_height(56.0)
             .frame(
                 egui::Frame::none()
-                    .fill(SKY_BLUE_PRIMARY)
-                    .inner_margin(egui::Margin::symmetric(12.0, 6.0)),
+                    .fill(HEADER_BG)
+                    .stroke(egui::Stroke::new(1.0, BORDER))
+                    .inner_margin(egui::Margin::symmetric(14.0, 8.0)),
             )
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
@@ -761,12 +768,12 @@ impl AutoKeyApp {
                             egui::RichText::new(crate::obfstr!("调度器"))
                                 .size(18.0)
                                 .strong()
-                                .color(egui::Color32::WHITE),
+                                .color(TEXT_PRIMARY),
                         );
                         ui.label(
                             egui::RichText::new(crate::obfstr!("Windows 按键调度器"))
                                 .size(10.0)
-                                .color(egui::Color32::from_rgba_premultiplied(255, 255, 255, 180)),
+                                .color(TEXT_SECONDARY),
                         );
                     });
 
@@ -776,23 +783,22 @@ impl AutoKeyApp {
                         egui::Layout::right_to_left(egui::Align::Center),
                         |ui| {
                             let running = self.is_running.load(Ordering::Acquire);
-                            let button =
-                                egui::Button::new(if running { "停止" } else { "启动" })
-                                    .min_size(egui::vec2(70.0, 30.0))
-                                    .rounding(egui::Rounding::same(4.0))
-                                    .fill(if running {
-                                        egui::Color32::from_rgb(244, 67, 54)
-                                    } else {
-                                        egui::Color32::from_rgb(76, 175, 80)
-                                    })
-                                    .stroke(egui::Stroke::new(
-                                        1.0,
-                                        if running {
-                                            egui::Color32::from_rgb(211, 47, 47)
-                                        } else {
-                                            egui::Color32::from_rgb(56, 142, 60)
-                                        },
-                                    ));
+                            let button = egui::Button::new(
+                                egui::RichText::new(if running { "停止" } else { "启动" })
+                                    .strong()
+                                    .color(egui::Color32::WHITE),
+                            )
+                            .min_size(egui::vec2(78.0, 32.0))
+                            .rounding(egui::Rounding::same(4.0))
+                            .fill(if running { STOP_RED } else { START_GREEN })
+                            .stroke(egui::Stroke::new(
+                                1.0,
+                                if running {
+                                    STOP_RED_DARK
+                                } else {
+                                    START_GREEN_DARK
+                                },
+                            ));
                             if ui
                                 .add(button)
                                 .on_hover_text("也可以单独按下左 Alt 切换运行状态")
@@ -813,7 +819,11 @@ impl AutoKeyApp {
                                     "已停止"
                                 })
                                 .size(12.0)
-                                .color(egui::Color32::from_rgba_premultiplied(255, 255, 255, 200)),
+                                .color(if running {
+                                    START_GREEN_DARK
+                                } else {
+                                    TEXT_SECONDARY
+                                }),
                             );
                         },
                     );
@@ -824,47 +834,50 @@ impl AutoKeyApp {
     fn render_settings(&mut self, ctx: &egui::Context) {
         egui::SidePanel::left("settings")
             .resizable(false)
-            .exact_width(280.0)
+            .show_separator_line(false)
+            .exact_width(238.0)
             .frame(
                 egui::Frame::none()
-                    .fill(SKY_BLUE_LIGHT)
-                    .inner_margin(egui::Margin::same(10.0)),
+                    .fill(PANEL_BG)
+                    .inner_margin(egui::Margin::same(12.0)),
             )
             .show(ctx, |ui| {
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    ui.label(
-                        egui::RichText::new("运行设置")
-                            .size(13.0)
-                            .strong()
-                            .color(SKY_BLUE_DARK),
-                    );
-                    ui.add_space(4.0);
-                    self.render_run_settings(ui);
+                egui::ScrollArea::vertical()
+                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                    .show(ui, |ui| {
+                        ui.label(
+                            egui::RichText::new("运行设置")
+                                .size(13.0)
+                                .strong()
+                                .color(ACCENT_BLUE),
+                        );
+                        ui.add_space(4.0);
+                        self.render_run_settings(ui);
 
-                    ui.add_space(8.0);
-                    ui.separator();
-                    ui.add_space(6.0);
-                    ui.label(
-                        egui::RichText::new("发送目标")
-                            .size(13.0)
-                            .strong()
-                            .color(SKY_BLUE_DARK),
-                    );
-                    ui.add_space(4.0);
-                    self.render_target_settings(ui);
+                        ui.add_space(8.0);
+                        ui.separator();
+                        ui.add_space(6.0);
+                        ui.label(
+                            egui::RichText::new("发送目标")
+                                .size(13.0)
+                                .strong()
+                                .color(ACCENT_BLUE),
+                        );
+                        ui.add_space(4.0);
+                        self.render_target_settings(ui);
 
-                    ui.add_space(8.0);
-                    ui.separator();
-                    ui.add_space(6.0);
-                    ui.label(
-                        egui::RichText::new("配置档")
-                            .size(13.0)
-                            .strong()
-                            .color(SKY_BLUE_DARK),
-                    );
-                    ui.add_space(4.0);
-                    self.render_profile_settings(ui);
-                });
+                        ui.add_space(8.0);
+                        ui.separator();
+                        ui.add_space(6.0);
+                        ui.label(
+                            egui::RichText::new("配置档")
+                                .size(13.0)
+                                .strong()
+                                .color(ACCENT_BLUE),
+                        );
+                        ui.add_space(4.0);
+                        self.render_profile_settings(ui);
+                    });
             });
     }
 
@@ -888,7 +901,13 @@ impl AutoKeyApp {
         ui.add_space(6.0);
         ui.horizontal(|ui| {
             ui.label("\u{5168}\u{5c40}\u{968f}\u{673a}\u{5ef6}\u{8fdf}:");
-            ui.add(egui::Slider::new(&mut config.global_random_delay, 0..=5000).text("ms"));
+            ui.add_sized(
+                [50.0, 28.0],
+                egui::DragValue::new(&mut config.global_random_delay)
+                    .range(0..=5000)
+                    .speed(10),
+            );
+            ui.label("ms");
         });
 
         ui.add_space(6.0);
@@ -935,10 +954,7 @@ impl AutoKeyApp {
                     }
                 ));
                 if !valid {
-                    ui.colored_label(
-                        egui::Color32::from_rgb(220, 80, 80),
-                        "\u{7a97}\u{53e3}\u{5df2}\u{5931}\u{6548}",
-                    );
+                    ui.colored_label(STOP_RED, "\u{7a97}\u{53e3}\u{5df2}\u{5931}\u{6548}");
                 }
                 if ui.button("\u{89e3}\u{9664}\u{7ed1}\u{5b9a}").clicked() {
                     *self.bound_window.write() = None;
@@ -1078,17 +1094,31 @@ impl AutoKeyApp {
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::none()
-                    .fill(SKY_BLUE_VERY_LIGHT)
-                    .inner_margin(egui::Margin::same(10.0)),
+                    .fill(APP_BG)
+                    .inner_margin(egui::Margin::same(12.0)),
             )
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    if ui.button("全选").clicked() {
+                    if ui
+                        .add(
+                            egui::Button::new(egui::RichText::new("全选").color(ACCENT_BLUE))
+                                .fill(egui::Color32::WHITE)
+                                .stroke(egui::Stroke::new(1.0, BORDER)),
+                        )
+                        .clicked()
+                    {
                         for key in &mut self.config.write().keys {
                             key.enabled = true;
                         }
                     }
-                    if ui.button("反选").clicked() {
+                    if ui
+                        .add(
+                            egui::Button::new(egui::RichText::new("反选").color(ACCENT_BLUE))
+                                .fill(egui::Color32::WHITE)
+                                .stroke(egui::Stroke::new(1.0, BORDER)),
+                        )
+                        .clicked()
+                    {
                         for key in &mut self.config.write().keys {
                             key.enabled = !key.enabled;
                         }
@@ -1118,37 +1148,37 @@ impl AutoKeyApp {
                                 egui::RichText::new("#")
                                     .strong()
                                     .size(13.0)
-                                    .color(SKY_BLUE_DARK),
+                                    .color(ACCENT_BLUE),
                             );
                             ui.label(
                                 egui::RichText::new("按键")
                                     .strong()
                                     .size(13.0)
-                                    .color(SKY_BLUE_DARK),
+                                    .color(ACCENT_BLUE),
                             );
                             ui.label(
                                 egui::RichText::new("基础延迟(ms)")
                                     .strong()
                                     .size(13.0)
-                                    .color(SKY_BLUE_DARK),
+                                    .color(ACCENT_BLUE),
                             );
                             ui.label(
                                 egui::RichText::new("随机范围(ms)")
                                     .strong()
                                     .size(13.0)
-                                    .color(SKY_BLUE_DARK),
+                                    .color(ACCENT_BLUE),
                             );
                             ui.label(
                                 egui::RichText::new("启用")
                                     .strong()
                                     .size(13.0)
-                                    .color(SKY_BLUE_DARK),
+                                    .color(ACCENT_BLUE),
                             );
                             ui.label(
                                 egui::RichText::new("状态")
                                     .strong()
                                     .size(13.0)
-                                    .color(SKY_BLUE_DARK),
+                                    .color(ACCENT_BLUE),
                             );
                             ui.end_row();
 
@@ -1174,7 +1204,7 @@ impl AutoKeyApp {
                                     ui.label(
                                         egui::RichText::new(format!("{}", index + 1))
                                             .size(13.0)
-                                            .color(egui::Color32::from_rgb(100, 100, 100)),
+                                            .color(TEXT_SECONDARY),
                                     );
 
                                     let button_text = if is_capturing {
@@ -1186,7 +1216,16 @@ impl AutoKeyApp {
                                         egui::RichText::new(button_text).size(13.0),
                                     )
                                     .min_size(egui::vec2(col_key, 28.0))
-                                    .rounding(egui::Rounding::same(3.0));
+                                    .rounding(egui::Rounding::same(4.0))
+                                    .fill(if is_capturing {
+                                        ACCENT_BLUE_SOFT
+                                    } else {
+                                        egui::Color32::WHITE
+                                    })
+                                    .stroke(egui::Stroke::new(
+                                        1.0,
+                                        if is_capturing { ACCENT_BLUE } else { BORDER },
+                                    ));
                                     if ui.add(button).clicked() {
                                         if is_capturing {
                                             self.capturing_key = None;
@@ -1229,13 +1268,13 @@ impl AutoKeyApp {
                                         ui.label(
                                             egui::RichText::new("\u{25cf}")
                                                 .size(14.0)
-                                                .color(egui::Color32::from_rgb(76, 175, 80)),
+                                                .color(START_GREEN),
                                         );
                                     } else {
                                         ui.label(
                                             egui::RichText::new("\u{25cb}")
                                                 .size(14.0)
-                                                .color(egui::Color32::from_rgb(189, 189, 189)),
+                                                .color(egui::Color32::from_rgb(166, 176, 188)),
                                         );
                                     }
 
@@ -1273,23 +1312,17 @@ impl AutoKeyApp {
             .exact_height(24.0)
             .frame(
                 egui::Frame::none()
-                    .fill(SKY_BLUE_LIGHT)
-                    .inner_margin(egui::Margin::symmetric(10.0, 3.0)),
+                    .fill(PANEL_BG)
+                    .stroke(egui::Stroke::new(1.0, BORDER))
+                    .inner_margin(egui::Margin::symmetric(12.0, 3.0)),
             )
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     let status = self.status.read().clone();
-                    ui.label(
-                        egui::RichText::new(status)
-                            .size(11.0)
-                            .color(egui::Color32::from_rgb(80, 120, 160)),
-                    );
+                    ui.label(egui::RichText::new(status).size(11.0).color(TEXT_SECONDARY));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if !self.hooks_available {
-                            ui.colored_label(
-                                egui::Color32::from_rgb(230, 81, 0),
-                                "全局快捷键不可用",
-                            );
+                            ui.colored_label(WARNING_ORANGE, "全局快捷键不可用");
                         }
                     });
                 });
@@ -1313,6 +1346,10 @@ impl Drop for AutoKeyApp {
 }
 
 impl eframe::App for AutoKeyApp {
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        APP_BG.to_normalized_gamma_f32()
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         setup_visuals(ctx);
 
@@ -1449,7 +1486,7 @@ pub fn run_gui(
     let icon = Arc::new(create_window_icon(false));
 
     let mut viewport = egui::ViewportBuilder::default()
-        .with_inner_size([width, height])
+        .with_inner_size([width, height.min(700.0)])
         .with_title(title)
         .with_app_id(crate::APP_USER_MODEL_ID)
         .with_icon(icon);
