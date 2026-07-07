@@ -48,6 +48,10 @@ impl TrayController {
         self.autostart_item.set_checked(is_autostart_enabled());
     }
 
+    pub fn window_handle(&self) -> isize {
+        self.tray.window_handle() as isize
+    }
+
     pub fn update(&mut self, is_running: bool, config_name: &str) {
         let state = (is_running, config_name.to_owned());
         if self.last_state.as_ref() == Some(&state) {
