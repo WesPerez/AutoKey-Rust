@@ -43,7 +43,7 @@ struct AppState {
     key_running: Arc<RwLock<Vec<bool>>>,
     config: Arc<RwLock<config::Config>>,
     preferences: Arc<RwLock<config::AppPreferences>>,
-    bound_window: Arc<RwLock<Option<isize>>>,
+    bound_window: Arc<window::WindowBinding>,
     status: Arc<RwLock<String>>,
 }
 
@@ -54,7 +54,7 @@ impl AppState {
             key_running: Arc::new(RwLock::new(vec![false; config::KEY_SLOT_COUNT])),
             config: Arc::new(RwLock::new(config)),
             preferences: Arc::new(RwLock::new(preferences)),
-            bound_window: Arc::new(RwLock::new(None)),
+            bound_window: Arc::new(window::WindowBinding::default()),
             status: Arc::new(RwLock::new(status)),
         }
     }
@@ -70,16 +70,8 @@ fn main() {
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let started_by_autostart = std::env::args_os().any(|arg| arg == "--autostart");
-    let use_glow_renderer = std::env::args_os().any(|arg| arg == "--renderer=glow");
     logging::log_startup(started_by_autostart);
-    logging::log_event(
-        "renderer",
-        if use_glow_renderer {
-            "requested=glow"
-        } else {
-            "requested=wgpu backends=dx12|vulkan power=low"
-        },
-    );
+    logging::log_event("renderer", "requested=glow");
     configure_taskbar_identity();
 
     config::initialize_store()?;
@@ -166,7 +158,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         state.status.clone(),
         instance.activation_handle(),
         hooks.is_some(),
-        use_glow_renderer,
         started_by_autostart,
     );
 

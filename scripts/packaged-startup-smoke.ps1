@@ -111,20 +111,18 @@ try {
     Wait-Until "startup and renderer log" {
         if (-not (Test-Path -LiteralPath $appLog)) { return $false }
         $content = Get-Content -LiteralPath $appLog -Raw
-        $content.Contains("autostart=true") -and $content.Contains("active=wgpu")
+        $content.Contains("autostart=true") -and $content.Contains("active=glow")
     } $StartupWaitSeconds
     Wait-Until "autostart viewport hiding" {
         $content = Get-Content -LiteralPath $appLog -Raw
         $content.Contains("main viewport hidden after first render")
     } $StartupWaitSeconds
 
-    $visibleAfterAutostart = [AutoKeyWindowProbe]::VisibleWindowsForProcess($firstPid)
-    $visibleMainAfterAutostart = @($visibleAfterAutostart | Where-Object {
-        ($_.Split('|', 2)[1]).Length -gt 0
-    })
-    if ($visibleMainAfterAutostart.Count -ne 0) {
-        throw "autostart main window is still visible: $($visibleMainAfterAutostart -join '; ')"
-    }
+    Wait-Until "autostart main window hidden" {
+        @([AutoKeyWindowProbe]::VisibleWindowsForProcess($firstPid) | Where-Object {
+            ($_.Split('|', 2)[1]).Length -gt 0
+        }).Count -eq 0
+    } $StartupWaitSeconds
 
     $second = Start-Process -FilePath $stagedExe -PassThru
     $secondPid = $second.Id

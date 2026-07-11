@@ -1,5 +1,4 @@
 use crate::config::{Config, KeyConfig, KEY_SLOT_COUNT, MAX_DELAY_MS};
-use crate::input::InputTarget;
 use crate::{humanizer, input, window, AppCommand};
 use anyhow::{Context, Result};
 use parking_lot::RwLock;
@@ -64,7 +63,7 @@ impl AutomationEngine {
         config: Arc<RwLock<Config>>,
         is_running: Arc<AtomicBool>,
         key_running: Arc<RwLock<Vec<bool>>>,
-        bound_window: Arc<RwLock<Option<isize>>>,
+        bound_window: Arc<window::WindowBinding>,
         status: Arc<RwLock<String>>,
     ) -> Result<Self> {
         let panic_running = is_running.clone();
@@ -124,6 +123,12 @@ struct RunKey {
     config: KeyConfig,
 }
 
+#[derive(Clone)]
+struct RunBinding {
+    binding: Arc<window::WindowBinding>,
+    snapshot: window::BindingSnapshot,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Control {
     Continue,
@@ -136,7 +141,7 @@ fn run_engine(
     config: Arc<RwLock<Config>>,
     is_running: Arc<AtomicBool>,
     key_running: Arc<RwLock<Vec<bool>>>,
-    bound_window: Arc<RwLock<Option<isize>>>,
+    bound_window: Arc<window::WindowBinding>,
     status: Arc<RwLock<String>>,
 ) {
     // Ensure high-resolution timer is initialized
@@ -169,28 +174,29 @@ fn run_engine(
             continue;
         }
 
-        let target_window = *bound_window.read();
-        match target_window {
-            Some(hwnd) if window::is_window_valid(hwnd) => {}
-            Some(_) => {
-                set_stopped(
-                    &is_running,
-                    &key_running,
-                    &status,
-                    "绑定窗口已失效，请重新选择窗口",
-                );
-                continue;
-            }
-            None => {
-                set_stopped(
-                    &is_running,
-                    &key_running,
-                    &status,
-                    "未绑定目标窗口，请先选择窗口",
-                );
-                continue;
-            }
+        let Some(binding_snapshot) = bound_window.snapshot() else {
+            set_stopped(
+                &is_running,
+                &key_running,
+                &status,
+                "未绑定目标窗口，请先选择窗口",
+            );
+            continue;
+        };
+        if !bound_window.is_current(&binding_snapshot) {
+            bound_window.clear_if_current(&binding_snapshot);
+            set_stopped(
+                &is_running,
+                &key_running,
+                &status,
+                "绑定窗口身份已变化或窗口已失效，请重新选择窗口",
+            );
+            continue;
         }
+        let run_binding = RunBinding {
+            binding: bound_window.clone(),
+            snapshot: binding_snapshot,
+        };
 
         let keys: Vec<RunKey> = snapshot
             .keys
@@ -213,7 +219,7 @@ fn run_engine(
                 keys,
                 is_running.clone(),
                 key_running.clone(),
-                bound_window.clone(),
+                run_binding,
                 status.clone(),
             )
         } else {
@@ -223,7 +229,7 @@ fn run_engine(
                 &keys,
                 &is_running,
                 &key_running,
-                &bound_window,
+                &run_binding,
                 &status,
             )
         };
@@ -248,7 +254,7 @@ fn run_independent(
     keys: Vec<RunKey>,
     is_running: Arc<AtomicBool>,
     key_running: Arc<RwLock<Vec<bool>>>,
-    bound_window: Arc<RwLock<Option<isize>>>,
+    run_binding: RunBinding,
     status: Arc<RwLock<String>>,
 ) -> Control {
     let stop_workers = Arc::new(AtomicBool::new(false));
@@ -261,7 +267,7 @@ fn run_independent(
         let worker_running = is_running.clone();
         let worker_stop = stop_workers.clone();
         let worker_key_running = key_running.clone();
-        let worker_bound_window = bound_window.clone();
+        let worker_run_binding = run_binding.clone();
         let worker_status = status.clone();
         let worker_done = done_tx.clone();
         let key_index = key.index;
@@ -275,7 +281,7 @@ fn run_independent(
                         &key,
                         &worker_running,
                         &worker_stop,
-                        &worker_bound_window,
+                        &worker_run_binding,
                         &worker_status,
                     )
                 }));
@@ -332,7 +338,7 @@ fn run_independent_key(
     key: &RunKey,
     is_running: &AtomicBool,
     stop: &AtomicBool,
-    bound_window: &RwLock<Option<isize>>,
+    run_binding: &RunBinding,
     status: &RwLock<String>,
 ) -> Control {
     let mut completed = 0u32;
@@ -344,7 +350,7 @@ fn run_independent_key(
             control => return control,
         }
 
-        match perform_press_running(key, is_running, stop, bound_window) {
+        match perform_press_running(key, is_running, stop, run_binding) {
             Ok(Control::Continue) => {
                 completed = completed.saturating_add(1);
                 if reached_limit(config.max_loops, completed) {
@@ -354,7 +360,7 @@ fn run_independent_key(
             }
             Ok(control) => return control,
             Err(error) => {
-                handle_send_error(key, error, bound_window, status);
+                handle_send_error(key, error, run_binding, status);
                 is_running.store(false, Ordering::Release);
                 stop.store(true, Ordering::Release);
                 return Control::Stop;
@@ -541,7 +547,7 @@ fn run_sequential(
     keys: &[RunKey],
     is_running: &AtomicBool,
     key_running: &RwLock<Vec<bool>>,
-    bound_window: &RwLock<Option<isize>>,
+    run_binding: &RunBinding,
     status: &RwLock<String>,
 ) -> Control {
     let mut completed_cycles = 0u32;
@@ -549,7 +555,7 @@ fn run_sequential(
         for key in keys {
             set_key_running(key_running, key.index, true);
             let started_at = Instant::now();
-            match perform_press(commands, key, is_running, bound_window, status) {
+            match perform_press(commands, key, is_running, run_binding, status) {
                 Ok(control) => {
                     if control != Control::Continue {
                         set_key_running(key_running, key.index, false);
@@ -557,7 +563,7 @@ fn run_sequential(
                     }
                 }
                 Err(error) => {
-                    handle_send_error(key, error, bound_window, status);
+                    handle_send_error(key, error, run_binding, status);
                     set_key_running(key_running, key.index, false);
                     return Control::Stop;
                 }
@@ -582,19 +588,23 @@ fn perform_press(
     commands: &Receiver<AppCommand>,
     key: &RunKey,
     is_running: &AtomicBool,
-    bound_window: &RwLock<Option<isize>>,
+    run_binding: &RunBinding,
     status: &RwLock<String>,
 ) -> Result<Control> {
-    let target = bound_input_target(bound_window)?;
-    input::key_down(target, key.config.vk_code)?;
+    run_binding
+        .binding
+        .with_current_target(&run_binding.snapshot, |target| {
+            input::key_down(target, key.config.vk_code)
+        })?;
     let control = wait_interruptible(
         Duration::from_millis(humanizer::next_press_duration() as u64),
         commands,
         is_running,
         status,
     );
-    let key_up_result = input::key_up(target, key.config.vk_code);
+    let key_up_result = input::key_up(run_binding.snapshot.target(), key.config.vk_code);
     key_up_result?;
+    ensure_current_binding(run_binding)?;
     Ok(control)
 }
 
@@ -602,17 +612,21 @@ fn perform_press_running(
     key: &RunKey,
     is_running: &AtomicBool,
     stop: &AtomicBool,
-    bound_window: &RwLock<Option<isize>>,
+    run_binding: &RunBinding,
 ) -> Result<Control> {
-    let target = bound_input_target(bound_window)?;
-    input::key_down(target, key.config.vk_code)?;
+    run_binding
+        .binding
+        .with_current_target(&run_binding.snapshot, |target| {
+            input::key_down(target, key.config.vk_code)
+        })?;
     let control = wait_running_interruptible(
         Duration::from_millis(humanizer::next_press_duration() as u64),
         is_running,
         stop,
     );
-    let key_up_result = input::key_up(target, key.config.vk_code);
+    let key_up_result = input::key_up(run_binding.snapshot.target(), key.config.vk_code);
     key_up_result?;
+    ensure_current_binding(run_binding)?;
     Ok(control)
 }
 
@@ -632,26 +646,23 @@ fn reached_limit(max_loops: i32, completed: u32) -> bool {
     max_loops >= 0 && completed >= max_loops as u32
 }
 
-fn bound_input_target(bound_window: &RwLock<Option<isize>>) -> Result<InputTarget> {
-    match *bound_window.read() {
-        Some(hwnd) if window::is_window_valid(hwnd) => Ok(InputTarget::Window(hwnd)),
-        Some(_) => anyhow::bail!("绑定窗口已失效，请重新选择窗口"),
-        None => anyhow::bail!("未绑定目标窗口，已停止发送"),
+fn ensure_current_binding(run_binding: &RunBinding) -> Result<()> {
+    if run_binding.binding.is_current(&run_binding.snapshot) {
+        Ok(())
+    } else {
+        anyhow::bail!("绑定窗口已更改、失效或身份不匹配")
     }
 }
 
 fn handle_send_error(
     key: &RunKey,
     error: anyhow::Error,
-    bound_window: &RwLock<Option<isize>>,
+    run_binding: &RunBinding,
     status: &RwLock<String>,
 ) {
-    let mut binding = bound_window.write();
-    if binding.is_some_and(|hwnd| !window::is_window_valid(hwnd)) {
-        *binding = None;
+    if run_binding.binding.clear_if_current(&run_binding.snapshot) {
+        *status.write() = format!("按键 [{}] 发送失败: {error}", key.config.key_name);
     }
-    drop(binding);
-    *status.write() = format!("按键 [{}] 发送失败: {error}", key.config.key_name);
 }
 
 fn set_key_running(key_running: &RwLock<Vec<bool>>, index: usize, running: bool) {
@@ -684,15 +695,6 @@ mod tests {
         assert!(!reached_limit(3, 2));
         assert!(reached_limit(3, 3));
         assert!(!reached_limit(-1, u32::MAX));
-    }
-
-    #[test]
-    fn input_target_requires_a_valid_bound_window() {
-        let unbound = RwLock::new(None);
-        assert!(bound_input_target(&unbound).is_err());
-
-        let invalid = RwLock::new(Some(0));
-        assert!(bound_input_target(&invalid).is_err());
     }
 
     #[test]

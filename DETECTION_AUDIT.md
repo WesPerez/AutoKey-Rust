@@ -28,7 +28,7 @@
 当前源码保留和不保留的边界如下：
 
 - 不存在直接 syscall 输入路径，自动主按键只投递到绑定窗口。
-- 保留 `PostMessage` lParam 随机化、字符串异或和随机线程名。
+- 保留 `PostMessage` lParam 随机化、拟人化时序、字符串异或和随机线程名。
 - 将配置目录从 `KeyScheduler` 改回文档一致的 `%APPDATA%\AutoKey-Rust`，并保留旧目录迁移。
 
 项目当前仍明确只支持授权场景下的标准自动化，不承诺检测绕过。文档里的安全边界应以“当前源码实际状态 + 不作规避保证”为准。
@@ -37,7 +37,7 @@
 
 - 标准输入：自动主按键使用 `PostMessage`；Hook 辅助合成事件使用 `SendInput`。
 - 输入标记：自动主按键不使用 `dwExtraInfo`；Hook 辅助合成事件使用 `dwExtraInfo = 0`。
-- 后台消息：`PostMessage` keydown lParam 包含 reserved bits 随机化和少量 repeat count 扰动；keyup 保持标准。投递目标是用户明确绑定的窗口，API 成功不代表目标一定消费消息。
+- 后台消息：`PostMessage` keydown lParam 包含 reserved bits 随机化和少量 repeat count 扰动；keyup 保持标准。投递目标是用户明确绑定且持续验证身份的窗口，API 成功不代表目标一定消费消息。
 - 时序：可配置随机范围、节奏变化、马尔可夫延迟关联、QPC 等待。
 - Hook：只处理物理键盘事件，避免合成输入反馈到快捷键状态机。
 - 运行时标识：部分字符串异或、随机线程名、启动时调试器/分析工具标志检测。

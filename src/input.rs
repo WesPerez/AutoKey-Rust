@@ -4,35 +4,28 @@ use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::stealth;
+use crate::window::BoundWindow;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum InputTarget {
-    Window(isize),
-}
-
-pub fn key_down(target: InputTarget, vk_code: u16) -> Result<()> {
+pub fn key_down(target: &BoundWindow, vk_code: u16) -> Result<()> {
     send_key_event(target, vk_code, false)
 }
 
-pub fn key_up(target: InputTarget, vk_code: u16) -> Result<()> {
+pub fn key_up(target: &BoundWindow, vk_code: u16) -> Result<()> {
     send_key_event(target, vk_code, true)
 }
 
-fn send_key_event(target: InputTarget, vk_code: u16, is_key_up: bool) -> Result<()> {
+fn send_key_event(target: &BoundWindow, vk_code: u16, is_key_up: bool) -> Result<()> {
     validate_vk(vk_code)?;
-    match target {
-        InputTarget::Window(hwnd) => post_window_event(hwnd, vk_code, is_key_up),
-    }
+    post_window_event(target, vk_code, is_key_up)
 }
 
-fn post_window_event(hwnd: isize, vk_code: u16, is_key_up: bool) -> Result<()> {
-    let hwnd = HWND(hwnd as *mut _);
+fn post_window_event(target: &BoundWindow, vk_code: u16, is_key_up: bool) -> Result<()> {
+    if !target.validate() {
+        bail!("绑定窗口身份已变化或窗口已失效");
+    }
+    let hwnd = HWND(target.hwnd() as *mut _);
     // SAFETY: hwnd is validated before use and the key message fields follow Win32 layout.
     unsafe {
-        if !IsWindow(hwnd).as_bool() {
-            bail!("绑定窗口已失效");
-        }
-
         let scan_code = MapVirtualKeyW(vk_code as u32, MAPVK_VK_TO_VSC);
         let mut bits = 1u32 | (scan_code << 16);
         if is_extended_key(vk_code) {

@@ -12,14 +12,14 @@ use windows::Win32::Foundation::*;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP,
-    VIRTUAL_KEY, VK_LMENU, VK_MENU,
+    SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS,
+    KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, VIRTUAL_KEY, VK_LMENU, VK_MENU,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 const RIGHT_DRAG_THRESHOLD_SQUARED: i64 = 64;
 
-type SharedBoundWindow = Arc<RwLock<Option<isize>>>;
+type SharedBoundWindow = Arc<window::WindowBinding>;
 
 static COMMAND_SENDER: Lazy<Mutex<Option<Sender<AppCommand>>>> = Lazy::new(|| Mutex::new(None));
 static UI_SENDER: Lazy<Mutex<Option<Sender<UiAction>>>> = Lazy::new(|| Mutex::new(None));
@@ -53,7 +53,7 @@ impl GlobalHooks {
     pub fn install(
         command_sender: Sender<AppCommand>,
         ui_sender: Sender<UiAction>,
-        bound_window: Arc<RwLock<Option<isize>>>,
+        bound_window: SharedBoundWindow,
         status: Arc<RwLock<String>>,
     ) -> Result<Self> {
         *COMMAND_SENDER.lock() = Some(command_sender);
@@ -111,7 +111,6 @@ impl GlobalHooks {
 
     pub fn begin_key_capture() {
         PRESSED_KEYS.lock().clear();
-        SUPPRESSED_KEYS.lock().clear();
         CAPTURE_MODE.store(1, Ordering::Release);
     }
 
@@ -180,17 +179,17 @@ unsafe extern "system" fn keyboard_proc(code: i32, w_param: WPARAM, l_param: LPA
 fn handle_keyboard_event(event: &KBDLLHOOKSTRUCT, message: u32) -> bool {
     let is_key_down = message == WM_KEYDOWN || message == WM_SYSKEYDOWN;
     let is_key_up = message == WM_KEYUP || message == WM_SYSKEYUP;
-    let raw_vk = event.vkCode as u16;
+    let raw_vk = physical_vk(event);
     let vk = normalize_vk(raw_vk);
-    let was_suppressed = is_key_up && SUPPRESSED_KEYS.lock().remove(&vk);
+    let was_suppressed = is_key_up && SUPPRESSED_KEYS.lock().remove(&raw_vk);
     let is_left_alt = is_physical_left_alt(event);
     let mut suppress_current_event = false;
 
     if is_key_down {
         let (inserted, others_held) = {
             let mut pressed = PRESSED_KEYS.lock();
-            let inserted = pressed.insert(vk);
-            let others_held = is_left_alt && inserted && pressed.iter().any(|&k| k != VK_ALT);
+            let inserted = pressed.insert(raw_vk);
+            let others_held = is_left_alt && inserted && pressed.iter().any(|&k| k != raw_vk);
             (inserted, others_held)
         };
 
@@ -215,7 +214,7 @@ fn handle_keyboard_event(event: &KBDLLHOOKSTRUCT, message: u32) -> bool {
                 // the foreground window is NOT our own app. When our window is
                 // focused we let Alt through so the UI stays responsive.
                 if LEFT_ALT_SOLO.load(Ordering::Relaxed) && !is_own_window_focused() {
-                    SUPPRESSED_KEYS.lock().insert(vk);
+                    SUPPRESSED_KEYS.lock().insert(raw_vk);
                 }
             }
         } else if inserted && LEFT_ALT_DOWN.load(Ordering::Relaxed) {
@@ -225,29 +224,20 @@ fn handle_keyboard_event(event: &KBDLLHOOKSTRUCT, message: u32) -> bool {
             // replay it exactly once so the foreground app sees the Alt+Key
             // combination. Skip this when our own window has focus (Alt was
             // never suppressed there).
-            if !is_own_window_focused() && SUPPRESSED_KEYS.lock().remove(&VK_ALT) {
-                ALT_SYNTHETIC_DOWN.store(true, Ordering::Relaxed);
-                unsafe {
-                    let input = INPUT {
-                        r#type: INPUT_KEYBOARD,
-                        Anonymous: INPUT_0 {
-                            ki: KEYBDINPUT {
-                                wVk: VK_MENU,
-                                wScan: 0,
-                                dwFlags: KEYBD_EVENT_FLAGS(0),
-                                time: 0,
-                                dwExtraInfo: 0,
-                            },
-                        },
-                    };
-                    let _ = SendInput(&[input], std::mem::size_of::<INPUT>() as i32);
+            if !is_own_window_focused() {
+                let suppressed_left_alt = suppressed_left_alt_key();
+                if let Some(alt_vk) = suppressed_left_alt {
+                    if send_keyboard_input(alt_vk, false) {
+                        SUPPRESSED_KEYS.lock().remove(&alt_vk);
+                        ALT_SYNTHETIC_DOWN.store(true, Ordering::Relaxed);
+                    }
                 }
             }
         }
 
         let capture_mode = CAPTURE_MODE.load(Ordering::Acquire);
         if inserted && capture_mode == 1 {
-            SUPPRESSED_KEYS.lock().insert(vk);
+            SUPPRESSED_KEYS.lock().insert(raw_vk);
             LEFT_ALT_SOLO.store(false, Ordering::Relaxed);
             if raw_vk == 0x1B {
                 CAPTURE_MODE.store(0, Ordering::Release);
@@ -260,49 +250,22 @@ fn handle_keyboard_event(event: &KBDLLHOOKSTRUCT, message: u32) -> bool {
         }
 
         if inserted && !HOTKEY_FIRED.load(Ordering::Relaxed) {
-            let pressed_keys: Vec<u16> = PRESSED_KEYS.lock().iter().copied().collect();
-            let pressed = pressed_keys.iter().copied().map(normalize_vk).collect();
+            let pressed = normalized_pressed_keys(&PRESSED_KEYS.lock());
             if handle_registered_hotkey(&pressed) {
                 HOTKEY_FIRED.store(true, Ordering::Relaxed);
                 LEFT_ALT_SOLO.store(false, Ordering::Relaxed);
                 let mut suppressed = SUPPRESSED_KEYS.lock();
-                for vk in pressed_keys {
-                    suppressed.insert(vk);
-                }
+                suppressed.insert(raw_vk);
             }
         }
     } else if is_key_up {
         let pressed_empty = {
             let mut pressed = PRESSED_KEYS.lock();
-            pressed.remove(&vk);
+            pressed.remove(&raw_vk);
             pressed.is_empty()
         };
         if !is_modifier(vk) || pressed_empty {
             HOTKEY_FIRED.store(false, Ordering::Relaxed);
-        }
-
-        // When a suppressed modifier key (Ctrl, Shift, Win — but not Alt) is
-        // released, the key-down already passed through to the system but the
-        // key-up is suppressed here. Inject a synthetic key-up so the system
-        // releases the modifier state and the key doesn't get "stuck" (requiring
-        // a manual press to clear). Alt is handled separately below with its own
-        // synthetic injection logic.
-        if was_suppressed && is_modifier(vk) && !is_left_alt {
-            unsafe {
-                let input = INPUT {
-                    r#type: INPUT_KEYBOARD,
-                    Anonymous: INPUT_0 {
-                        ki: KEYBDINPUT {
-                            wVk: VIRTUAL_KEY(vk),
-                            wScan: 0,
-                            dwFlags: KEYEVENTF_KEYUP,
-                            time: 0,
-                            dwExtraInfo: 0,
-                        },
-                    },
-                };
-                let _ = SendInput(&[input], std::mem::size_of::<INPUT>() as i32);
-            }
         }
 
         if is_left_alt {
@@ -319,33 +282,77 @@ fn handle_keyboard_event(event: &KBDLLHOOKSTRUCT, message: u32) -> bool {
             // synthetic injection and no suppression. The toggle already fired
             // above. Only inject a synthetic key-up when we actually suppressed
             // the real key-down (started outside our window).
-            let needs_synthetic_up =
-                was_suppressed || ALT_SYNTHETIC_DOWN.swap(false, Ordering::Relaxed);
-            if needs_synthetic_up {
-                unsafe {
-                    let input = INPUT {
-                        r#type: INPUT_KEYBOARD,
-                        Anonymous: INPUT_0 {
-                            ki: KEYBDINPUT {
-                                wVk: VK_MENU,
-                                wScan: 0,
-                                dwFlags: KEYEVENTF_KEYUP,
-                                time: 0,
-                                dwExtraInfo: 0,
-                            },
-                        },
-                    };
-                    let _ = SendInput(&[input], std::mem::size_of::<INPUT>() as i32);
-                }
+            if ALT_SYNTHETIC_DOWN.swap(false, Ordering::Relaxed) {
+                suppress_current_event = send_keyboard_input(raw_vk, true);
+            } else if was_suppressed {
                 suppress_current_event = true;
             }
         }
     }
 
-    was_suppressed
-        || CAPTURE_MODE.load(Ordering::Acquire) != 0
-        || SUPPRESSED_KEYS.lock().contains(&vk)
-        || suppress_current_event
+    was_suppressed || SUPPRESSED_KEYS.lock().contains(&raw_vk) || suppress_current_event
+}
+
+fn physical_vk(event: &KBDLLHOOKSTRUCT) -> u16 {
+    let raw = event.vkCode as u16;
+    match raw {
+        0x10 => {
+            if event.scanCode == 0x36 {
+                0xA1
+            } else {
+                0xA0
+            }
+        }
+        0x11 => {
+            if event.flags.0 & LLKHF_EXTENDED.0 != 0 {
+                0xA3
+            } else {
+                0xA2
+            }
+        }
+        0x12 => {
+            if event.flags.0 & LLKHF_EXTENDED.0 != 0 {
+                0xA5
+            } else {
+                0xA4
+            }
+        }
+        _ => raw,
+    }
+}
+
+fn normalized_pressed_keys(keys: &BTreeSet<u16>) -> BTreeSet<u16> {
+    keys.iter().copied().map(normalize_vk).collect()
+}
+
+fn suppressed_left_alt_key() -> Option<u16> {
+    let suppressed = SUPPRESSED_KEYS.lock();
+    [0xA4, 0x12]
+        .into_iter()
+        .find(|candidate| suppressed.contains(candidate))
+}
+
+fn send_keyboard_input(vk: u16, key_up: bool) -> bool {
+    let mut flags = KEYBD_EVENT_FLAGS(0);
+    if key_up {
+        flags |= KEYEVENTF_KEYUP;
+    }
+    if matches!(vk, 0xA3 | 0xA5 | 0x5B | 0x5C) {
+        flags |= KEYEVENTF_EXTENDEDKEY;
+    }
+    let input = INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT {
+                wVk: VIRTUAL_KEY(vk),
+                wScan: 0,
+                dwFlags: flags,
+                time: 0,
+                dwExtraInfo: 0,
+            },
+        },
+    };
+    unsafe { SendInput(&[input], std::mem::size_of::<INPUT>() as i32) == 1 }
 }
 
 /// Identify a physical Left Alt key event.
@@ -422,7 +429,7 @@ fn bind_window_under_cursor() {
         if GetCursorPos(&mut point).is_ok() {
             bind_window_at(point);
         } else {
-            bind_first_valid_window(&[GetForegroundWindow()]);
+            bind_first_valid_window(&[]);
         }
     }
 }
@@ -435,7 +442,6 @@ fn bind_window_at(point: POINT) {
             child,
             GetAncestor(child, GA_ROOT),
             GetAncestor(child, GA_ROOTOWNER),
-            GetForegroundWindow(),
         ]);
     }
 }
@@ -449,24 +455,26 @@ fn bind_first_valid_window(candidates: &[HWND]) {
         }
         seen.push(hwnd);
 
-        if let Some(target) = window::bindable_root_window(hwnd) {
-            set_bound_window(Some(target));
-            return;
+        if let Some(bound_window) = BOUND_WINDOW.lock().clone() {
+            if let Ok(snapshot) = bound_window.bind_candidate(hwnd) {
+                send_command(AppCommand::Stop);
+                set_binding_status(Some(snapshot.target().title()), snapshot.target().hwnd());
+                return;
+            }
         }
     }
 
-    set_bound_window(None);
+    if let Some(bound_window) = BOUND_WINDOW.lock().clone() {
+        bound_window.clear();
+    }
+    send_command(AppCommand::Stop);
+    set_binding_status(None, 0);
 }
 
-fn set_bound_window(hwnd: Option<isize>) {
-    if let Some(bound_window) = BOUND_WINDOW.lock().clone() {
-        *bound_window.write() = hwnd;
-    }
-
+fn set_binding_status(title: Option<String>, hwnd: isize) {
     if let Some(status) = STATUS.lock().clone() {
-        *status.write() = match hwnd {
-            Some(hwnd) => {
-                let title = window::get_window_title(hwnd);
+        *status.write() = match title {
+            Some(title) => {
                 if title.is_empty() {
                     format!("已绑定窗口 {hwnd:#x}")
                 } else {
@@ -487,5 +495,48 @@ fn send_ui_action(action: UiAction) {
 fn send_command(command: AppCommand) {
     if let Some(sender) = COMMAND_SENDER.lock().clone() {
         let _ = sender.send(command);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn keyboard_event(vk: u32, scan_code: u32, extended: bool) -> KBDLLHOOKSTRUCT {
+        KBDLLHOOKSTRUCT {
+            vkCode: vk,
+            scanCode: scan_code,
+            flags: if extended {
+                LLKHF_EXTENDED
+            } else {
+                KBDLLHOOKSTRUCT_FLAGS(0)
+            },
+            time: 0,
+            dwExtraInfo: 0,
+        }
+    }
+
+    #[test]
+    fn maps_generic_modifiers_to_physical_sides() {
+        assert_eq!(physical_vk(&keyboard_event(0x10, 0x2A, false)), 0xA0);
+        assert_eq!(physical_vk(&keyboard_event(0x10, 0x36, false)), 0xA1);
+        assert_eq!(physical_vk(&keyboard_event(0x11, 0x1D, false)), 0xA2);
+        assert_eq!(physical_vk(&keyboard_event(0x11, 0x1D, true)), 0xA3);
+        assert_eq!(physical_vk(&keyboard_event(0x12, 0x38, false)), 0xA4);
+        assert_eq!(physical_vk(&keyboard_event(0x12, 0x38, true)), 0xA5);
+    }
+
+    #[test]
+    fn modifier_sides_stay_independent_until_hotkey_matching() {
+        let mut physical = BTreeSet::from([0xA2, 0xA3, 0x5A]);
+        assert_eq!(
+            normalized_pressed_keys(&physical),
+            BTreeSet::from([VK_CONTROL, 0x5A])
+        );
+        physical.remove(&0xA2);
+        assert_eq!(
+            normalized_pressed_keys(&physical),
+            BTreeSet::from([VK_CONTROL, 0x5A])
+        );
     }
 }

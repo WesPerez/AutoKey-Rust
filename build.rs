@@ -15,6 +15,7 @@ mod runtime_icon {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-changed=src/icon.rs");
+    emit_git_rerun_paths();
 
     let out_dir = std::env::var("OUT_DIR")?;
     let ico_path = Path::new(&out_dir).join("app.ico");
@@ -37,6 +38,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|| "unknown".to_owned());
     println!("cargo:rustc-env=AUTOKEY_BUILD_GIT_HASH={git_hash}");
     Ok(())
+}
+
+fn emit_git_rerun_paths() {
+    let git_dir = Path::new(".git");
+    let head_path = git_dir.join("HEAD");
+    println!("cargo:rerun-if-changed={}", head_path.display());
+
+    if let Ok(head) = std::fs::read_to_string(&head_path) {
+        if let Some(reference) = head.trim().strip_prefix("ref: ") {
+            println!(
+                "cargo:rerun-if-changed={}",
+                git_dir.join(reference).display()
+            );
+        }
+    }
 }
 
 fn generate_ico(path: &Path) -> std::io::Result<()> {

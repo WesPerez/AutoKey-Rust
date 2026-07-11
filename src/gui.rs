@@ -7,7 +7,7 @@ use crate::hotkey::key_display_name;
 use crate::single_instance::SingleInstance;
 use crate::taskbar::TaskbarDecoration;
 use crate::tray::TrayController;
-use crate::window::{enumerate_windows, get_window_title, is_window_valid, WindowInfo};
+use crate::window::{enumerate_windows, WindowBinding, WindowInfo};
 use crate::{AppCommand, UiAction};
 use eframe::egui;
 use parking_lot::RwLock;
@@ -467,7 +467,7 @@ pub struct AutoKeyApp {
     ui_rx: Receiver<UiAction>,
     is_running: Arc<AtomicBool>,
     key_running: Arc<RwLock<Vec<bool>>>,
-    bound_window: Arc<RwLock<Option<isize>>>,
+    bound_window: Arc<WindowBinding>,
     status: Arc<RwLock<String>>,
     _activation_wake: ActivationWake,
     hooks_available: bool,
@@ -501,7 +501,7 @@ impl AutoKeyApp {
         ui_rx: Receiver<UiAction>,
         is_running: Arc<AtomicBool>,
         key_running: Arc<RwLock<Vec<bool>>>,
-        bound_window: Arc<RwLock<Option<isize>>>,
+        bound_window: Arc<WindowBinding>,
         status: Arc<RwLock<String>>,
         activation_handle: isize,
         hooks_available: bool,
@@ -948,11 +948,12 @@ impl AutoKeyApp {
     }
 
     fn render_target_settings(&mut self, ui: &mut egui::Ui) {
-        let bound = *self.bound_window.read();
+        let bound = self.bound_window.snapshot();
         match bound {
-            Some(hwnd) => {
-                let title = get_window_title(hwnd);
-                let valid = is_window_valid(hwnd);
+            Some(snapshot) => {
+                let target = snapshot.target();
+                let title = target.title();
+                let valid = target.validate();
                 egui::Frame::none()
                     .fill(CONTROL_BG)
                     .stroke(egui::Stroke::new(1.0, BORDER))
@@ -963,7 +964,7 @@ impl AutoKeyApp {
                             egui::RichText::new(format!(
                                 "\u{5df2}\u{7ed1}\u{5b9a}: {}",
                                 if title.is_empty() {
-                                    format!("{hwnd:#x}")
+                                    format!("{:#x}", target.hwnd())
                                 } else {
                                     title
                                 }
@@ -978,7 +979,8 @@ impl AutoKeyApp {
                     .add(subtle_button("\u{89e3}\u{9664}\u{7ed1}\u{5b9a}"))
                     .clicked()
                 {
-                    *self.bound_window.write() = None;
+                    self.bound_window.clear();
+                    let _ = self.command_tx.send(AppCommand::Stop);
                     *self.status.write() =
                         "\u{5df2}\u{89e3}\u{9664}\u{7a97}\u{53e3}\u{7ed1}\u{5b9a}".to_owned();
                 }
@@ -1011,10 +1013,21 @@ impl AutoKeyApp {
                         .show(ui, |ui| {
                             for window in &self.available_windows {
                                 if ui.add(subtle_button(&window.title)).clicked() {
-                                    *self.bound_window.write() = Some(window.hwnd);
-                                    *self.status.write() =
-                                        format!("\u{5df2}\u{7ed1}\u{5b9a}: {}", window.title);
-                                    self.show_window_selector = false;
+                                    match self.bound_window.bind_candidate(window.hwnd) {
+                                        Ok(snapshot) => {
+                                            let _ = self.command_tx.send(AppCommand::Stop);
+                                            *self.status.write() = format!(
+                                                "\u{5df2}\u{7ed1}\u{5b9a}: {}",
+                                                snapshot.target().title()
+                                            );
+                                            self.show_window_selector = false;
+                                        }
+                                        Err(error) => {
+                                            *self.status.write() = format!(
+                                                "\u{7ed1}\u{5b9a}\u{5931}\u{8d25}: {error}"
+                                            );
+                                        }
+                                    }
                                 }
                             }
                         });
@@ -1413,6 +1426,7 @@ impl eframe::App for AutoKeyApp {
             .is_some_and(|hide_at| Instant::now() >= hide_at)
         {
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            crate::window::hide_own_main_window();
             self.autostart_hide_at = None;
             crate::logging::log_event("autostart", "main viewport hidden after first render");
         }
@@ -1473,6 +1487,7 @@ impl eframe::App for AutoKeyApp {
                 self.persist_window_state(ctx);
                 self.save_now();
                 ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+                crate::window::hide_own_main_window();
             } else {
                 self.persist_window_state(ctx);
                 self.save_now();
@@ -1502,11 +1517,10 @@ pub fn run_gui(
     ui_rx: Receiver<UiAction>,
     is_running: Arc<AtomicBool>,
     key_running: Arc<RwLock<Vec<bool>>>,
-    bound_window: Arc<RwLock<Option<isize>>>,
+    bound_window: Arc<WindowBinding>,
     status: Arc<RwLock<String>>,
     activation_handle: isize,
     hooks_available: bool,
-    use_glow_renderer: bool,
     started_by_autostart: bool,
 ) -> Result<(), eframe::Error> {
     let title = format!(
@@ -1538,16 +1552,7 @@ pub fn run_gui(
     }
     let options = eframe::NativeOptions {
         viewport,
-        renderer: if use_glow_renderer {
-            eframe::Renderer::Glow
-        } else {
-            eframe::Renderer::Wgpu
-        },
-        wgpu_options: eframe::egui_wgpu::WgpuConfiguration {
-            supported_backends: eframe::wgpu::Backends::DX12 | eframe::wgpu::Backends::VULKAN,
-            power_preference: eframe::wgpu::PowerPreference::LowPower,
-            ..Default::default()
-        },
+        renderer: eframe::Renderer::Glow,
         ..Default::default()
     };
 
@@ -1555,22 +1560,7 @@ pub fn run_gui(
         &crate::obfstr!("调度器"),
         options,
         Box::new(move |cc| {
-            if let Some(render_state) = &cc.wgpu_render_state {
-                let adapter = render_state.adapter.get_info();
-                crate::logging::log_event(
-                    "renderer",
-                    &format!(
-                        "active=wgpu backend={:?} adapter={} device={:?} driver={} driver_info={}",
-                        adapter.backend,
-                        adapter.name,
-                        adapter.device_type,
-                        adapter.driver,
-                        adapter.driver_info
-                    ),
-                );
-            } else {
-                crate::logging::log_event("renderer", "active=glow");
-            }
+            crate::logging::log_event("renderer", "active=glow");
             install_chinese_font_fallback(&cc.egui_ctx);
             let app = AutoKeyApp::new(
                 config,
