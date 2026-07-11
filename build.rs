@@ -1,5 +1,6 @@
 use std::io::Write;
 use std::path::Path;
+use std::process::Command;
 
 const ICO_SIZES: &[usize] = &[16, 32, 48, 64, 128, 256];
 
@@ -22,7 +23,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut res = winres::WindowsResource::new();
     res.set_icon(ico_path.to_string_lossy().as_ref());
+    res.set("FileDescription", "AutoKey-Rust Windows 按键调度器");
+    res.set("ProductName", "AutoKey-Rust");
+    res.set("OriginalFilename", "AutoKeyRust.exe");
     res.compile()?;
+
+    let git_hash = Command::new("git")
+        .args(["rev-parse", "--short=12", "HEAD"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+        .unwrap_or_else(|| "unknown".to_owned());
+    println!("cargo:rustc-env=AUTOKEY_BUILD_GIT_HASH={git_hash}");
     Ok(())
 }
 

@@ -3,8 +3,6 @@
 //! - dwExtraInfo randomization (simulates QPC timestamp range)
 //! - PostMessage lParam randomization (reserved bits + occasional repeat count)
 //! - Compile-time string obfuscation
-//! - Anti-debug / anti-analysis helpers (active in init)
-//! - Memory protection (secure zeroing)
 
 // ── dwExtraInfo randomization ─────────────────────────────────────────
 
@@ -127,105 +125,6 @@ pub fn random_thread_name() -> String {
     format!("{prefix}{suffix}_{id:x}")
 }
 
-// ── Anti-debug helpers ────────────────────────────────────────────────
-
-fn is_debugger_present_check() -> bool {
-    #[link(name = "kernel32")]
-    extern "system" {
-        fn IsDebuggerPresent() -> i32;
-    }
-    unsafe { IsDebuggerPresent() != 0 }
-}
-
-fn is_remote_debugger_present_check() -> bool {
-    #[link(name = "kernel32")]
-    extern "system" {
-        fn CheckRemoteDebuggerPresent(hProcess: isize, pbDebuggerPresent: *mut i32) -> i32;
-    }
-    let mut present = 0i32;
-    unsafe {
-        CheckRemoteDebuggerPresent(-1isize, &mut present);
-    }
-    present != 0
-}
-
-fn analysis_tool_detected_check() -> bool {
-    // Only check for tools that are NOT commonly loaded by normal Windows.
-    // "dbghelp" is excluded because it's loaded by many normal processes.
-    let tools: Vec<String> = [
-        obfstr!("sbiedll"),      // Sandboxie
-        obfstr!("api_log"),      // API Monitor
-        obfstr!("dir_watch"),    // Directory watcher
-        obfstr!("pstorec"),      // Password store
-        obfstr!("vmcheck"),      // VM check
-        obfstr!("wpespy"),       // WPE Pro
-    ].into_iter().collect();
-
-    for tool in &tools {
-        let name_wide: Vec<u16> = tool.encode_utf16().chain(Some(0)).collect();
-        #[link(name = "kernel32")]
-        extern "system" {
-            fn GetModuleHandleW(lpModuleName: *const u16) -> isize;
-        }
-        unsafe {
-            if GetModuleHandleW(name_wide.as_ptr()) != 0 {
-                return true;
-            }
-        }
-    }
-    false
-}
-
-// ── Memory protection ─────────────────────────────────────────────────
-
-/// Erase a sensitive buffer from memory by zeroing it.
-#[allow(dead_code)]
-pub fn secure_zero(buf: &mut [u8]) {
-    for byte in buf.iter_mut() {
-        unsafe {
-            std::ptr::write_volatile(byte, 0);
-        }
-    }
-    std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);
-}
-
-// ── Initialization ────────────────────────────────────────────────────
-
-/// One-time anti-detection initialization.
-pub fn init() {
-    // Seed the RNG for stealth operations
-    fastrand::seed(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos() as u64)
-            .unwrap_or(0),
-    );
-
-    // Active anti-debug: set flags if debugger/analysis tools detected
-    if is_debugger_present_check() || is_remote_debugger_present_check() {
-        DEBUGGER_DETECTED.store(true, std::sync::atomic::Ordering::Release);
-    }
-
-    if analysis_tool_detected_check() {
-        ANALYSIS_DETECTED.store(true, std::sync::atomic::Ordering::Release);
-    }
-}
-
-static DEBUGGER_DETECTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-static ANALYSIS_DETECTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-/// Returns true if a debugger was detected at startup.
-#[allow(dead_code)]
-pub fn is_debugger_detected() -> bool {
-    DEBUGGER_DETECTED.load(std::sync::atomic::Ordering::Acquire)
-}
-
-/// Returns true if analysis tools were detected at startup.
-#[allow(dead_code)]
-pub fn is_analysis_detected() -> bool {
-    ANALYSIS_DETECTED.load(std::sync::atomic::Ordering::Acquire)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -300,13 +199,6 @@ mod tests {
     fn obfstr_roundtrip() {
         let decoded = obfstr!("hello world");
         assert_eq!(decoded, "hello world");
-    }
-
-    #[test]
-    fn secure_zero_clears_buffer() {
-        let mut buf = vec![0xABu8; 32];
-        secure_zero(&mut buf);
-        assert!(buf.iter().all(|&b| b == 0));
     }
 
     #[test]

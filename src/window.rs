@@ -1,6 +1,7 @@
 use std::ffi::OsString;
 use std::os::windows::ffi::OsStringExt;
 use windows::Win32::Foundation::*;
+use windows::Win32::Graphics::Gdi::{InvalidateRect, UpdateWindow};
 use windows::Win32::System::Threading::GetCurrentProcessId;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -80,6 +81,21 @@ pub fn find_own_hwnd() -> Option<isize> {
     }
 }
 
+pub fn restore_own_main_window() -> bool {
+    let Some(hwnd) = find_own_hwnd() else {
+        return false;
+    };
+    unsafe {
+        let hwnd = HWND(hwnd as *mut _);
+        let _ = ShowWindowAsync(hwnd, SW_RESTORE);
+        let _ = ShowWindowAsync(hwnd, SW_SHOW);
+        let _ = InvalidateRect(hwnd, None, true);
+        let _ = UpdateWindow(hwnd);
+        let _ = SetForegroundWindow(hwnd);
+    }
+    true
+}
+
 fn is_shell_or_desktop(hwnd: HWND) -> bool {
     unsafe {
         hwnd.0.is_null()
@@ -87,35 +103,6 @@ fn is_shell_or_desktop(hwnd: HWND) -> bool {
             || hwnd == GetShellWindow()
             || hwnd == GetAncestor(GetShellWindow(), GA_ROOT)
     }
-}
-
-pub fn restore_own_main_window() -> bool {
-    let mut found = 0isize;
-    // SAFETY: EnumWindows is synchronous, so the output pointer remains valid.
-    unsafe {
-        let _ = EnumWindows(
-            Some(find_own_main_window),
-            LPARAM((&mut found as *mut isize) as isize),
-        );
-        if found == 0 {
-            return false;
-        }
-
-        let hwnd = HWND(found as *mut _);
-        let _ = ShowWindowAsync(hwnd, SW_RESTORE);
-        let _ = ShowWindowAsync(hwnd, SW_SHOW);
-        let _ = SetForegroundWindow(hwnd);
-    }
-    true
-}
-
-pub fn request_own_main_window_close() -> bool {
-    let Some(hwnd) = find_own_hwnd() else {
-        return false;
-    };
-    // SAFETY: Posting WM_CLOSE to our own top-level window requests the normal
-    // eframe close path instead of bypassing Drop/autosave with process::exit.
-    unsafe { PostMessageW(HWND(hwnd as *mut _), WM_CLOSE, WPARAM(0), LPARAM(0)).is_ok() }
 }
 
 pub fn get_window_title(hwnd: isize) -> String {

@@ -342,7 +342,8 @@ pub fn preferences_path() -> PathBuf {
 }
 
 fn app_data_directory() -> PathBuf {
-    std::env::var_os("APPDATA")
+    std::env::var_os("AUTOKEY_APPDATA_ROOT")
+        .or_else(|| std::env::var_os("APPDATA"))
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."))
 }
@@ -472,7 +473,9 @@ fn migrate_previous_rust_store() -> Result<()> {
 }
 
 fn migrate_old_csharp_configs() -> Result<()> {
-    let old_directory = app_data_directory().join(&crate::obfstr!("AutoKey")).join(&crate::obfstr!("configs"));
+    let old_directory = app_data_directory()
+        .join(&crate::obfstr!("AutoKey"))
+        .join(&crate::obfstr!("configs"));
     if !old_directory.exists() {
         return Ok(());
     }

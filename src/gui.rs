@@ -5,6 +5,7 @@ use crate::config::{
 use crate::hook::{GlobalHooks, ALT_TOGGLE_HANDLED_BY_HOOK, NEXT_CONFIG_REQUESTED};
 use crate::hotkey::key_display_name;
 use crate::single_instance::SingleInstance;
+use crate::taskbar::TaskbarDecoration;
 use crate::tray::TrayController;
 use crate::window::{enumerate_windows, get_window_title, is_window_valid, WindowInfo};
 use crate::{AppCommand, UiAction};
@@ -13,21 +14,12 @@ use parking_lot::RwLock;
 use std::fs;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
-use std::sync::{Arc, Once};
+use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
-use windows::core::{PCWSTR, PROPVARIANT};
 use windows::Win32::Foundation::*;
-use windows::Win32::Graphics::Gdi::*;
-use windows::Win32::Storage::EnhancedStorage::PKEY_AppUserModel_RelaunchIconResource;
-use windows::Win32::System::Com::{
-    CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
-};
-use windows::Win32::UI::Shell::PropertiesSystem::{
-    IPropertyStore, PSCoerceToCanonicalValue, SHGetPropertyStoreForWindow,
-};
 use windows::Win32::UI::Shell::{
-    ITaskbarList3, Shell_NotifyIconW, TaskbarList, NIF_ICON, NIF_TIP, NIM_MODIFY, NOTIFYICONDATAW,
+    Shell_NotifyIconW, NIF_ICON, NIF_TIP, NIM_MODIFY, NOTIFYICONDATAW,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -72,227 +64,6 @@ fn create_window_icon(is_running: bool) -> egui::IconData {
         width: crate::icon::ICON_SIZE as u32,
         height: crate::icon::ICON_SIZE as u32,
         rgba,
-    }
-}
-
-/// Create a Windows HICON from RGBA data for the taskbar icon.
-fn create_hicon(is_running: bool) -> Option<isize> {
-    const SIZE: u32 = crate::icon::ICON_SIZE as u32;
-    let rgba = crate::icon::render_icon_rgba_unbadged(is_running);
-    create_hicon_from_rgba(SIZE, &rgba)
-}
-
-fn create_taskbar_overlay_hicon(is_running: bool, config_name: &str) -> Option<isize> {
-    const SIZE: u32 = 64;
-    let rgba = crate::icon::render_taskbar_overlay_rgba_at(SIZE as usize, is_running, config_name);
-    create_hicon_from_rgba(SIZE, &rgba)
-}
-
-fn create_hicon_from_rgba(size: u32, rgba: &[u8]) -> Option<isize> {
-    unsafe {
-        let hdc = GetDC(None);
-        if hdc.is_invalid() {
-            return None;
-        }
-
-        let mut bmi: BITMAPINFO = std::mem::zeroed();
-        bmi.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
-        bmi.bmiHeader.biWidth = size as i32;
-        bmi.bmiHeader.biHeight = -(size as i32); // top-down DIB
-        bmi.bmiHeader.biPlanes = 1;
-        bmi.bmiHeader.biBitCount = 32;
-        bmi.bmiHeader.biCompression = 0; // BI_RGB
-
-        let mut ppv_bits: *mut std::ffi::c_void = std::ptr::null_mut();
-        let h_color = match CreateDIBSection(hdc, &bmi, DIB_RGB_COLORS, &mut ppv_bits, None, 0) {
-            Ok(h) => h,
-            Err(_) => {
-                let _ = ReleaseDC(None, hdc);
-                return None;
-            }
-        };
-        let _ = ReleaseDC(None, hdc);
-
-        if ppv_bits.is_null() {
-            let _ = DeleteObject(h_color);
-            return None;
-        }
-
-        // Copy RGBA with pre-multiplied alpha and BGRA byte order
-        let bits = ppv_bits as *mut u8;
-        for i in 0..(size * size) as usize {
-            let r = rgba[i * 4];
-            let g = rgba[i * 4 + 1];
-            let b = rgba[i * 4 + 2];
-            let a = rgba[i * 4 + 3];
-            *bits.add(i * 4) = (b as u16 * a as u16 / 255) as u8;
-            *bits.add(i * 4 + 1) = (g as u16 * a as u16 / 255) as u8;
-            *bits.add(i * 4 + 2) = (r as u16 * a as u16 / 255) as u8;
-            *bits.add(i * 4 + 3) = a;
-        }
-
-        // Create mask bitmap (1bpp, all zeros = fully opaque)
-        let mask_row_bytes = (size.div_ceil(32) * 4) as usize;
-        let mask_data = vec![0u8; mask_row_bytes * size as usize];
-        let h_mask = CreateBitmap(
-            size as i32,
-            size as i32,
-            1,
-            1,
-            Some(mask_data.as_ptr() as *const _),
-        );
-
-        let icon_info = ICONINFO {
-            fIcon: TRUE,
-            xHotspot: 0,
-            yHotspot: 0,
-            hbmMask: h_mask,
-            hbmColor: h_color,
-        };
-
-        let hicon = match CreateIconIndirect(&icon_info) {
-            Ok(h) => h,
-            Err(_) => {
-                let _ = DeleteObject(h_color);
-                let _ = DeleteObject(h_mask);
-                return None;
-            }
-        };
-
-        let _ = DeleteObject(h_color);
-        let _ = DeleteObject(h_mask);
-
-        if hicon.is_invalid() {
-            None
-        } else {
-            Some(hicon.0 as isize)
-        }
-    }
-}
-
-/// Update the taskbar icon by sending WM_SETICON to the main window.
-fn update_taskbar_icons(
-    is_running: bool,
-    config_name: &str,
-    taskbar_hicon: &mut Option<isize>,
-    taskbar_overlay_hicon: &mut Option<isize>,
-) -> bool {
-    let Some(hwnd) = crate::window::find_own_hwnd() else {
-        return false;
-    };
-
-    let base_icon_ok = update_taskbar_icon(hwnd, is_running, taskbar_hicon);
-    let overlay_ok =
-        update_taskbar_overlay_icon(hwnd, is_running, config_name, taskbar_overlay_hicon);
-    let relaunch_ok = update_taskbar_relaunch_icon_resource(hwnd, is_running, config_name);
-
-    base_icon_ok && overlay_ok && relaunch_ok
-}
-
-/// Update the taskbar icon by sending WM_SETICON to the main window.
-fn update_taskbar_icon(hwnd: isize, is_running: bool, old_hicon: &mut Option<isize>) -> bool {
-    let Some(hicon) = create_hicon(is_running) else {
-        return false;
-    };
-
-    unsafe {
-        let hwnd = HWND(hwnd as *mut _);
-        let _ = SendMessageW(hwnd, WM_SETICON, WPARAM(0), LPARAM(hicon)); // ICON_SMALL
-        let _ = SendMessageW(hwnd, WM_SETICON, WPARAM(1), LPARAM(hicon)); // ICON_BIG
-        let _ = SendMessageW(hwnd, WM_SETICON, WPARAM(2), LPARAM(hicon)); // ICON_SMALL2
-    }
-
-    if let Some(old) = old_hicon.take() {
-        unsafe {
-            let _ = DestroyIcon(HICON(old as *mut _));
-        }
-    }
-    *old_hicon = Some(hicon);
-    true
-}
-
-fn update_taskbar_overlay_icon(
-    hwnd: isize,
-    is_running: bool,
-    config_name: &str,
-    old_hicon: &mut Option<isize>,
-) -> bool {
-    let Some(hicon) = create_taskbar_overlay_hicon(is_running, config_name) else {
-        return false;
-    };
-
-    let description = format!(
-        "AutoKeyRust {}",
-        crate::icon::config_badge_text(config_name)
-    );
-    let description: Vec<u16> = description.encode_utf16().chain(Some(0)).collect();
-
-    let result = unsafe {
-        static TASKBAR_COM_INIT: Once = Once::new();
-        TASKBAR_COM_INIT.call_once(|| {
-            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
-        });
-        let taskbar: windows::core::Result<ITaskbarList3> =
-            CoCreateInstance(&TaskbarList, None, CLSCTX_INPROC_SERVER);
-        taskbar.and_then(|taskbar| {
-            taskbar.HrInit()?;
-            taskbar.SetOverlayIcon(
-                HWND(hwnd as *mut _),
-                HICON(hicon as *mut _),
-                PCWSTR(description.as_ptr()),
-            )
-        })
-    };
-
-    if result.is_ok() {
-        if let Some(old) = old_hicon.take() {
-            unsafe {
-                let _ = DestroyIcon(HICON(old as *mut _));
-            }
-        }
-        *old_hicon = Some(hicon);
-        true
-    } else {
-        unsafe {
-            let _ = DestroyIcon(HICON(hicon as *mut _));
-        }
-        false
-    }
-}
-
-fn update_taskbar_relaunch_icon_resource(hwnd: isize, is_running: bool, config_name: &str) -> bool {
-    let badge = crate::icon::config_badge_text(config_name);
-    let status = if is_running { "running" } else { "stopped" };
-    let icon_path = crate::config::app_directory().join(format!("taskbar-{status}-{badge}.ico"));
-    let Some(parent) = icon_path.parent() else {
-        return false;
-    };
-    if fs::create_dir_all(parent).is_err() {
-        return false;
-    }
-    if fs::write(
-        &icon_path,
-        crate::icon::render_icon_ico_unbadged(is_running),
-    )
-    .is_err()
-    {
-        return false;
-    }
-
-    let icon_resource = format!("{},0", icon_path.display());
-    unsafe {
-        let hwnd = HWND(hwnd as *mut _);
-        let Ok(store) = SHGetPropertyStoreForWindow::<_, IPropertyStore>(hwnd) else {
-            return false;
-        };
-        let mut prop = PROPVARIANT::from(icon_resource.as_str());
-        if PSCoerceToCanonicalValue(&PKEY_AppUserModel_RelaunchIconResource, &mut prop).is_err() {
-            return false;
-        }
-        store
-            .SetValue(&PKEY_AppUserModel_RelaunchIconResource, &prop)
-            .and_then(|_| store.Commit())
-            .is_ok()
     }
 }
 
@@ -457,8 +228,11 @@ impl ActivationWake {
             .spawn(move || {
                 while !worker_stop.load(Ordering::Acquire) {
                     if SingleInstance::wait_for_activation(handle, 100) {
-                        crate::window::restore_own_main_window();
-                        context.request_repaint();
+                        crate::logging::log_event(
+                            "single_instance",
+                            "activation received; showing main viewport",
+                        );
+                        show_main_window(&context);
                         thread::sleep(Duration::from_millis(20));
                     }
                 }
@@ -466,6 +240,14 @@ impl ActivationWake {
             .ok();
         Self { stop, worker }
     }
+}
+
+fn show_main_window(context: &egui::Context) {
+    crate::window::restore_own_main_window();
+    context.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+    context.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+    context.send_viewport_cmd(egui::ViewportCommand::Focus);
+    context.request_repaint();
 }
 
 impl Drop for ActivationWake {
@@ -505,7 +287,9 @@ impl TrayIconStateSync {
 
         if state_changed || self.hicon.is_none() {
             let rgba = crate::icon::render_icon_rgba(is_running, config_name);
-            let Some(hicon) = create_hicon_from_rgba(crate::icon::ICON_SIZE as u32, &rgba) else {
+            let Some(hicon) =
+                crate::taskbar::create_hicon_from_rgba(crate::icon::ICON_SIZE as u32, &rgba)
+            else {
                 return;
             };
             if let Some(old) = self.hicon.replace(hicon) {
@@ -578,10 +362,7 @@ fn update_shell_tray_icon_with_id(
     unsafe { Shell_NotifyIconW(NIM_MODIFY, &data).as_bool() }
 }
 
-/// Background thread that directly polls tray menu events.
-/// When the window is hidden via ShowWindow(SW_HIDE), the egui event loop stops,
-/// so tray.poll() in update() never runs. This thread ensures tray events are
-/// always processed regardless of window visibility.
+/// Background thread that polls tray events while the main viewport is hidden.
 struct TrayExitWatcher {
     stop: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
@@ -594,6 +375,7 @@ impl TrayExitWatcher {
         tray_window: Option<isize>,
         is_running: Arc<AtomicBool>,
         preferences: Arc<RwLock<AppPreferences>>,
+        status: Arc<RwLock<String>>,
     ) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let worker_stop = stop.clone();
@@ -616,8 +398,7 @@ impl TrayExitWatcher {
                     // Poll tray icon events (double-click to show)
                     while let Ok(event) = TrayIconEvent::receiver().try_recv() {
                         if matches!(event, TrayIconEvent::DoubleClick { .. }) {
-                            crate::window::restore_own_main_window();
-                            egui_ctx.request_repaint();
+                            show_main_window(&egui_ctx);
                         }
                     }
 
@@ -626,19 +407,41 @@ impl TrayExitWatcher {
                         let id_str = event.id.as_ref();
                         if id_str == "exit" {
                             exit_requested.store(true, Ordering::Release);
-                            // Must restore window first — when hidden (SW_HIDE),
-                            // eframe stops its event loop and update() never runs,
-                            // so close_requested() is never checked.
-                            crate::window::restore_own_main_window();
-                            let _ = crate::window::request_own_main_window_close();
+                            egui_ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                             egui_ctx.request_repaint();
                         } else if id_str == "show" {
-                            crate::window::restore_own_main_window();
-                            egui_ctx.request_repaint();
+                            show_main_window(&egui_ctx);
                         } else if id_str == "autostart" {
-                            // Toggle autostart
-                            let enabled = !crate::tray::is_autostart_enabled();
-                            let _ = crate::tray::set_autostart(enabled);
+                            let enabled = !crate::autostart::is_enabled();
+                            match crate::autostart::set_enabled(enabled) {
+                                Ok(verified) => {
+                                    *status.write() = if verified.enabled {
+                                        format!(
+                                            "开机自启已启用 ({:?}): {}",
+                                            verified.backend,
+                                            verified.link_path.display()
+                                        )
+                                    } else {
+                                        "开机自启已关闭并验证".to_owned()
+                                    };
+                                    crate::logging::log_event(
+                                        "autostart",
+                                        &format!(
+                                            "enabled={} backend={:?} link={} target={} args={} working_dir={}",
+                                            verified.enabled,
+                                            verified.backend,
+                                            verified.link_path.display(),
+                                            verified.target_path.display(),
+                                            verified.arguments,
+                                            verified.working_dir.display()
+                                        ),
+                                    );
+                                }
+                                Err(error) => {
+                                    crate::logging::log_error("set_autostart", &error);
+                                    *status.write() = format!("开机自启设置失败: {error}");
+                                }
+                            }
                         }
                     }
                 }
@@ -683,8 +486,8 @@ pub struct AutoKeyApp {
     last_hook_alt_toggle: Instant,
     alt_fallback_down: bool,
     alt_fallback_solo: bool,
-    taskbar_hicon: Option<isize>,
-    taskbar_overlay_hicon: Option<isize>,
+    taskbar: TaskbarDecoration,
+    autostart_hide_at: Option<Instant>,
     exit_requested: Arc<AtomicBool>,
     _tray_exit_watcher: TrayExitWatcher,
 }
@@ -702,6 +505,7 @@ impl AutoKeyApp {
         status: Arc<RwLock<String>>,
         activation_handle: isize,
         hooks_available: bool,
+        started_by_autostart: bool,
         egui_context: egui::Context,
     ) -> Self {
         let last_saved_config = config.read().clone();
@@ -730,8 +534,10 @@ impl AutoKeyApp {
             tray_window,
             is_running.clone(),
             preferences.clone(),
+            status.clone(),
         );
-
+        let autostart_hide_at = (started_by_autostart && tray.is_some())
+            .then(|| Instant::now() + Duration::from_millis(750));
         let mut app = Self {
             config,
             preferences,
@@ -758,8 +564,8 @@ impl AutoKeyApp {
             last_hook_alt_toggle: Instant::now() - Duration::from_secs(10),
             alt_fallback_down: false,
             alt_fallback_solo: false,
-            taskbar_hicon: None,
-            taskbar_overlay_hicon: None,
+            taskbar: TaskbarDecoration::new(),
+            autostart_hide_at,
             exit_requested,
             _tray_exit_watcher: tray_exit_watcher,
         };
@@ -1594,21 +1400,6 @@ impl AutoKeyApp {
     }
 }
 
-impl Drop for AutoKeyApp {
-    fn drop(&mut self) {
-        if let Some(hicon) = self.taskbar_hicon.take() {
-            unsafe {
-                let _ = DestroyIcon(HICON(hicon as *mut _));
-            }
-        }
-        if let Some(hicon) = self.taskbar_overlay_hicon.take() {
-            unsafe {
-                let _ = DestroyIcon(HICON(hicon as *mut _));
-            }
-        }
-    }
-}
-
 impl eframe::App for AutoKeyApp {
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
         APP_BG.to_normalized_gamma_f32()
@@ -1616,6 +1407,15 @@ impl eframe::App for AutoKeyApp {
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         setup_visuals(ctx);
+
+        if self
+            .autostart_hide_at
+            .is_some_and(|hide_at| Instant::now() >= hide_at)
+        {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            self.autostart_hide_at = None;
+            crate::logging::log_event("autostart", "main viewport hidden after first render");
+        }
 
         self.process_ui_actions();
         if NEXT_CONFIG_REQUESTED.swap(false, Ordering::Acquire) {
@@ -1640,7 +1440,7 @@ impl eframe::App for AutoKeyApp {
         }
 
         // Update window and taskbar icons when either running state or config changes.
-        {
+        if self.taskbar.enabled() {
             let running = self.is_running.load(Ordering::Acquire);
             let name = self.preferences.read().selected_config.clone();
             let state = (running, name.clone());
@@ -1658,12 +1458,7 @@ impl eframe::App for AutoKeyApp {
                 self.last_icon_attempt = Some((state.clone(), Instant::now()));
                 let icon = create_window_icon(running);
                 ctx.send_viewport_cmd(egui::ViewportCommand::Icon(Some(Arc::new(icon))));
-                if update_taskbar_icons(
-                    running,
-                    &name,
-                    &mut self.taskbar_hicon,
-                    &mut self.taskbar_overlay_hicon,
-                ) {
+                if self.taskbar.update(running, &name) {
                     self.last_icon_state = Some(state);
                 }
             }
@@ -1677,20 +1472,10 @@ impl eframe::App for AutoKeyApp {
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
                 self.persist_window_state(ctx);
                 self.save_now();
-                self.hide_window();
+                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
             } else {
                 self.persist_window_state(ctx);
                 self.save_now();
-                if let Some(hicon) = self.taskbar_hicon.take() {
-                    unsafe {
-                        let _ = DestroyIcon(HICON(hicon as *mut _));
-                    }
-                }
-                if let Some(hicon) = self.taskbar_overlay_hicon.take() {
-                    unsafe {
-                        let _ = DestroyIcon(HICON(hicon as *mut _));
-                    }
-                }
             }
         }
 
@@ -1709,16 +1494,6 @@ impl eframe::App for AutoKeyApp {
     }
 }
 
-impl AutoKeyApp {
-    fn hide_window(&mut self) {
-        if let Some(hwnd) = crate::window::find_own_hwnd() {
-            unsafe {
-                let _ = ShowWindowAsync(HWND(hwnd as *mut _), SW_HIDE);
-            }
-        }
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 pub fn run_gui(
     config: Arc<RwLock<Config>>,
@@ -1731,6 +1506,8 @@ pub fn run_gui(
     status: Arc<RwLock<String>>,
     activation_handle: isize,
     hooks_available: bool,
+    use_glow_renderer: bool,
+    started_by_autostart: bool,
 ) -> Result<(), eframe::Error> {
     let title = format!(
         "{} - {}",
@@ -1759,9 +1536,18 @@ pub fn run_gui(
     if pos_x.is_finite() && pos_y.is_finite() {
         viewport = viewport.with_position([pos_x, pos_y]);
     }
-
     let options = eframe::NativeOptions {
         viewport,
+        renderer: if use_glow_renderer {
+            eframe::Renderer::Glow
+        } else {
+            eframe::Renderer::Wgpu
+        },
+        wgpu_options: eframe::egui_wgpu::WgpuConfiguration {
+            supported_backends: eframe::wgpu::Backends::DX12 | eframe::wgpu::Backends::VULKAN,
+            power_preference: eframe::wgpu::PowerPreference::LowPower,
+            ..Default::default()
+        },
         ..Default::default()
     };
 
@@ -1769,6 +1555,22 @@ pub fn run_gui(
         &crate::obfstr!("调度器"),
         options,
         Box::new(move |cc| {
+            if let Some(render_state) = &cc.wgpu_render_state {
+                let adapter = render_state.adapter.get_info();
+                crate::logging::log_event(
+                    "renderer",
+                    &format!(
+                        "active=wgpu backend={:?} adapter={} device={:?} driver={} driver_info={}",
+                        adapter.backend,
+                        adapter.name,
+                        adapter.device_type,
+                        adapter.driver,
+                        adapter.driver_info
+                    ),
+                );
+            } else {
+                crate::logging::log_event("renderer", "active=glow");
+            }
             install_chinese_font_fallback(&cc.egui_ctx);
             let app = AutoKeyApp::new(
                 config,
@@ -1781,6 +1583,7 @@ pub fn run_gui(
                 status,
                 activation_handle,
                 hooks_available,
+                started_by_autostart,
                 cc.egui_ctx.clone(),
             );
             Ok(Box::new(app))

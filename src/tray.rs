@@ -1,17 +1,6 @@
 use anyhow::{Context, Result};
-use std::path::PathBuf;
 use tray_icon::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
-use winreg::enums::{HKEY_CURRENT_USER, KEY_READ};
-use winreg::RegKey;
-
-fn run_key_path() -> String {
-    crate::obfstr!(r"Software\Microsoft\Windows\CurrentVersion\Run")
-}
-
-fn run_value_name() -> String {
-    crate::obfstr!("{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}")
-}
 
 pub struct TrayController {
     tray: TrayIcon,
@@ -23,8 +12,13 @@ impl TrayController {
     pub fn new() -> Result<Self> {
         let menu = Menu::new();
         let show_item = MenuItem::with_id("show", "显示", true, None);
-        let autostart_item =
-            CheckMenuItem::with_id("autostart", "开机自启", true, is_autostart_enabled(), None);
+        let autostart_item = CheckMenuItem::with_id(
+            "autostart",
+            "开机自启",
+            true,
+            crate::autostart::is_enabled(),
+            None,
+        );
         let separator = PredefinedMenuItem::separator();
         let exit_item = MenuItem::with_id("exit", "退出", true, None);
         menu.append_items(&[&show_item, &autostart_item, &separator, &exit_item])?;
@@ -45,7 +39,8 @@ impl TrayController {
     }
 
     pub fn poll(&self) {
-        self.autostart_item.set_checked(is_autostart_enabled());
+        self.autostart_item
+            .set_checked(crate::autostart::is_enabled());
     }
 
     pub fn window_handle(&self) -> isize {
@@ -77,31 +72,4 @@ fn create_icon(is_running: bool, config_name: &str) -> Result<Icon> {
         crate::icon::ICON_SIZE as u32,
     )
     .context("无法创建托盘图标")
-}
-
-pub fn is_autostart_enabled() -> bool {
-    let current_user = RegKey::predef(HKEY_CURRENT_USER);
-    let run_key = run_key_path();
-    let run_value = run_value_name();
-    current_user
-        .open_subkey_with_flags(&run_key, KEY_READ)
-        .and_then(|key| key.get_value::<String, _>(&run_value))
-        .is_ok()
-}
-
-pub fn set_autostart(enabled: bool) -> Result<()> {
-    let current_user = RegKey::predef(HKEY_CURRENT_USER);
-    let run_key = run_key_path();
-    let run_value = run_value_name();
-    let (key, _) = current_user
-        .create_subkey(&run_key)
-        .context("无法打开开机启动注册表项")?;
-
-    if enabled {
-        let executable: PathBuf = std::env::current_exe()?;
-        key.set_value(&run_value, &format!("\"{}\"", executable.display()))?;
-    } else {
-        let _ = key.delete_value(&run_value);
-    }
-    Ok(())
 }

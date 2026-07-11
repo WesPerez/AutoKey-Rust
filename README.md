@@ -38,6 +38,9 @@ cargo clippy --all-targets -- -D warnings
 cargo build --release
 ```
 
+`build.bat` 还会运行隔离的 packaged startup smoke，验证快捷方式启动、
+`--autostart` 隐藏、第二实例唤醒和测试资源清理，然后将产物复制到 `dist`。
+
 输出文件：
 
 ```text
@@ -54,12 +57,20 @@ target\release\AutoKeyRust.exe
 
 `Ctrl+Z` 会按配置列表顺序切换到下一个配置。该快捷键当前为固定行为，不在界面中配置。
 
+### 开机自启
+
+- 普通权限运行时，程序使用当前用户 Startup 文件夹中的 `AutoKey-Rust.lnk`。
+- 管理员权限运行或 exe 设置了 `RUNASADMIN` 时，程序使用当前用户登录触发、最高权限运行的计划任务，避免登录阶段无法显示 UAC 导致启动被跳过。
+- 切换自启时会验证目标 exe、`--autostart` 参数、工作目录和 Windows 禁用状态，并清理本程序旧版 Run 注册表项。
+- 从管理员计划任务切回普通快捷方式，或删除管理员计划任务时，应以管理员身份运行程序。
+
 ## 数据位置
 
 ```text
 %APPDATA%\AutoKey-Rust\configs\*.json
 %APPDATA%\AutoKey-Rust\app-state.json
 %APPDATA%\AutoKey-Rust\logs\error.log
+%APPDATA%\AutoKey-Rust\logs\app.log
 ```
 
 首次运行会尝试迁移：

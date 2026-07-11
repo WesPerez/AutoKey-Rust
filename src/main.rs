@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod autostart;
 mod config;
 mod engine;
 mod gui;
@@ -11,6 +12,7 @@ mod input;
 mod logging;
 mod single_instance;
 mod stealth;
+mod taskbar;
 mod tray;
 mod window;
 
@@ -59,6 +61,7 @@ impl AppState {
 }
 
 fn main() {
+    logging::install_panic_hook();
     if let Err(error) = run() {
         logging::log_error("fatal", &error);
         show_fatal_error(&error.to_string());
@@ -66,15 +69,34 @@ fn main() {
 }
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
-    // Early anti-detection initialization
-    stealth::init();
+    let started_by_autostart = std::env::args_os().any(|arg| arg == "--autostart");
+    let use_glow_renderer = std::env::args_os().any(|arg| arg == "--renderer=glow");
+    logging::log_startup(started_by_autostart);
+    logging::log_event(
+        "renderer",
+        if use_glow_renderer {
+            "requested=glow"
+        } else {
+            "requested=wgpu backends=dx12|vulkan power=low"
+        },
+    );
     configure_taskbar_identity();
 
     config::initialize_store()?;
 
-    let instance = match single_instance::SingleInstance::try_acquire() {
+    let instance = match single_instance::SingleInstance::try_acquire(!started_by_autostart) {
         Ok(Some(instance)) => instance,
-        Ok(None) => return Ok(()),
+        Ok(None) => {
+            logging::log_event(
+                "single_instance",
+                if started_by_autostart {
+                    "existing instance found; autostart instance exits silently"
+                } else {
+                    "existing instance found; activation requested"
+                },
+            );
+            return Ok(());
+        }
         Err(error) => {
             logging::log_error("single_instance", &error);
             return Err(error.into());
@@ -144,6 +166,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         state.status.clone(),
         instance.activation_handle(),
         hooks.is_some(),
+        use_glow_renderer,
+        started_by_autostart,
     );
 
     let _ = command_tx.send(AppCommand::Exit);
@@ -170,7 +194,10 @@ fn configure_taskbar_identity() {
 }
 
 fn show_fatal_error(message: &str) {
-    let title: Vec<u16> = crate::obfstr!("启动失败").encode_utf16().chain(Some(0)).collect();
+    let title: Vec<u16> = crate::obfstr!("启动失败")
+        .encode_utf16()
+        .chain(Some(0))
+        .collect();
     let message: Vec<u16> = format!("{message}\0").encode_utf16().collect();
     // SAFETY: Both UTF-16 strings are NUL-terminated for the duration of the call.
     unsafe {

@@ -627,7 +627,8 @@ fn handle_send_error(
     bound_window: &RwLock<Option<isize>>,
     status: &RwLock<String>,
 ) {
-    if let Some(hwnd) = *bound_window.read() {
+    let current_window = *bound_window.read();
+    if let Some(hwnd) = current_window {
         if !window::is_window_valid(hwnd) {
             *bound_window.write() = None;
         }
