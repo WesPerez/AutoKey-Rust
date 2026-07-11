@@ -12,6 +12,7 @@
 /// We generate values in a plausible range to avoid the "completely
 /// random 64-bit" fingerprint.
 #[inline]
+#[allow(dead_code)]
 pub fn random_extra_info() -> usize {
     let lo: u64 = 100_000_000;
     let hi: u64 = 5_000_000_000;
@@ -37,7 +38,6 @@ pub fn randomize_lparam(bits: u32, is_key_up: bool) -> isize {
     }
 
     let mut lparam = bits;
-
     let reserved_noise = (fastrand::u32(..) & 0x0F) << 25;
     lparam = (lparam & !RESERVED_BITS_MASK) | reserved_noise;
 

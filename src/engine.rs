@@ -54,8 +54,6 @@ impl HiResTimer {
     }
 }
 
-const RECOVERY_DELAY: Duration = Duration::from_millis(100);
-
 pub struct AutomationEngine {
     worker: Option<JoinHandle<()>>,
 }
@@ -169,6 +167,29 @@ fn run_engine(
                 "循环次数为 0，没有执行任务",
             );
             continue;
+        }
+
+        let target_window = *bound_window.read();
+        match target_window {
+            Some(hwnd) if window::is_window_valid(hwnd) => {}
+            Some(_) => {
+                set_stopped(
+                    &is_running,
+                    &key_running,
+                    &status,
+                    "绑定窗口已失效，请重新选择窗口",
+                );
+                continue;
+            }
+            None => {
+                set_stopped(
+                    &is_running,
+                    &key_running,
+                    &status,
+                    "未绑定目标窗口，请先选择窗口",
+                );
+                continue;
+            }
         }
 
         let keys: Vec<RunKey> = snapshot
@@ -334,13 +355,9 @@ fn run_independent_key(
             Ok(control) => return control,
             Err(error) => {
                 handle_send_error(key, error, bound_window, status);
-                if config.max_loops >= 0 {
-                    return Control::Continue;
-                }
-                match wait_running_interruptible(RECOVERY_DELAY, is_running, stop) {
-                    Control::Continue => next_due = Instant::now(),
-                    control => return control,
-                }
+                is_running.store(false, Ordering::Release);
+                stop.store(true, Ordering::Release);
+                return Control::Stop;
             }
         }
     }
@@ -568,10 +585,7 @@ fn perform_press(
     bound_window: &RwLock<Option<isize>>,
     status: &RwLock<String>,
 ) -> Result<Control> {
-    let target = match *bound_window.read() {
-        Some(hwnd) => InputTarget::Window(hwnd),
-        None => InputTarget::Foreground,
-    };
+    let target = bound_input_target(bound_window)?;
     input::key_down(target, key.config.vk_code)?;
     let control = wait_interruptible(
         Duration::from_millis(humanizer::next_press_duration() as u64),
@@ -590,10 +604,7 @@ fn perform_press_running(
     stop: &AtomicBool,
     bound_window: &RwLock<Option<isize>>,
 ) -> Result<Control> {
-    let target = match *bound_window.read() {
-        Some(hwnd) => InputTarget::Window(hwnd),
-        None => InputTarget::Foreground,
-    };
+    let target = bound_input_target(bound_window)?;
     input::key_down(target, key.config.vk_code)?;
     let control = wait_running_interruptible(
         Duration::from_millis(humanizer::next_press_duration() as u64),
@@ -621,18 +632,25 @@ fn reached_limit(max_loops: i32, completed: u32) -> bool {
     max_loops >= 0 && completed >= max_loops as u32
 }
 
+fn bound_input_target(bound_window: &RwLock<Option<isize>>) -> Result<InputTarget> {
+    match *bound_window.read() {
+        Some(hwnd) if window::is_window_valid(hwnd) => Ok(InputTarget::Window(hwnd)),
+        Some(_) => anyhow::bail!("绑定窗口已失效，请重新选择窗口"),
+        None => anyhow::bail!("未绑定目标窗口，已停止发送"),
+    }
+}
+
 fn handle_send_error(
     key: &RunKey,
     error: anyhow::Error,
     bound_window: &RwLock<Option<isize>>,
     status: &RwLock<String>,
 ) {
-    let current_window = *bound_window.read();
-    if let Some(hwnd) = current_window {
-        if !window::is_window_valid(hwnd) {
-            *bound_window.write() = None;
-        }
+    let mut binding = bound_window.write();
+    if binding.is_some_and(|hwnd| !window::is_window_valid(hwnd)) {
+        *binding = None;
     }
+    drop(binding);
     *status.write() = format!("按键 [{}] 发送失败: {error}", key.config.key_name);
 }
 
@@ -666,6 +684,15 @@ mod tests {
         assert!(!reached_limit(3, 2));
         assert!(reached_limit(3, 3));
         assert!(!reached_limit(-1, u32::MAX));
+    }
+
+    #[test]
+    fn input_target_requires_a_valid_bound_window() {
+        let unbound = RwLock::new(None);
+        assert!(bound_input_target(&unbound).is_err());
+
+        let invalid = RwLock::new(Some(0));
+        assert!(bound_input_target(&invalid).is_err());
     }
 
     #[test]

@@ -986,7 +986,7 @@ impl AutoKeyApp {
             None => {
                 ui.label(
                     egui::RichText::new(
-                        "\u{672a}\u{7ed1}\u{5b9a}\u{7a97}\u{53e3} (\u{53d1}\u{9001}\u{5230}\u{524d}\u{53f0})",
+                        "\u{672a}\u{7ed1}\u{5b9a}\u{7a97}\u{53e3} (\u{4e0d}\u{4f1a}\u{53d1}\u{9001}\u{6309}\u{952e})",
                     )
                     .color(TEXT_SECONDARY),
                 );
